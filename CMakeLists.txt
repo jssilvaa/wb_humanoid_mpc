@@ -83,6 +83,10 @@ find_package(urdfdom_headers CONFIG REQUIRED
 set(URDFDOM_PREFIX_INCLUDE         "${urdfdom_DIR}/../../../include")
 set(URDFDOM_HEADERS_PREFIX_INCLUDE "${urdfdom_headers_DIR}/../../../include")
 
+# Pinocchio (brewed) via pkg-config — composite-rigid-body / centroidal algorithms.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(pinocchio REQUIRED IMPORTED_TARGET pinocchio)
+
 set(RR ${CMAKE_CURRENT_SOURCE_DIR}/robot_runtime)
 
 # -----------------------------------------------------------------------------
@@ -149,13 +153,25 @@ set_target_properties(mujocoSimPDStand PROPERTIES
 # -----------------------------------------------------------------------------
 set(HDR ${CMAKE_CURRENT_SOURCE_DIR}/humanoid_nmpc/humanoid_disturbance_rejection)
 add_library(humanoid_disturbance_rejection STATIC
-  ${HDR}/src/CentroidalMomentumObserver.cpp)
+  ${HDR}/src/CentroidalMomentumObserver.cpp
+  ${HDR}/src/CentroidalMomentumCalculator.cpp)
 target_include_directories(humanoid_disturbance_rejection PUBLIC ${HDR}/include)
-target_link_libraries(humanoid_disturbance_rejection PUBLIC Eigen3::Eigen)
+target_link_libraries(humanoid_disturbance_rejection PUBLIC Eigen3::Eigen PkgConfig::pinocchio)
+# Pinocchio headers pull in Boost; on Homebrew (Apple Silicon) Boost sits under the
+# brew prefix, which Apple clang does not search by default. Add it explicitly.
+if(APPLE AND EXISTS /opt/homebrew/include)
+  target_include_directories(humanoid_disturbance_rejection SYSTEM PUBLIC /opt/homebrew/include)
+endif()
 add_library(humanoid::adr ALIAS humanoid_disturbance_rejection)
 
-# A1 verification: synthetic step-disturbance convergence + detection latency.
+# A1.1 verification: synthetic step-disturbance convergence + detection latency.
 add_executable(observerSelfCheck ${HDR}/test/observerSelfCheck.cpp)
 target_link_libraries(observerSelfCheck PRIVATE humanoid::adr)
 set_target_properties(observerSelfCheck PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# A1.2 verification: Pinocchio centroidal-momentum helper (h, com from q, v).
+add_executable(centroidalSanityCheck ${HDR}/test/centroidalSanityCheck.cpp)
+target_link_libraries(centroidalSanityCheck PRIVATE humanoid::adr)
+set_target_properties(centroidalSanityCheck PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
