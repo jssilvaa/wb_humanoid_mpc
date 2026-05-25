@@ -29,7 +29,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma once
 
-#include <GL/glew.h>
+#if !defined(__APPLE__)
+#include <GL/glew.h>  // macOS uses the system OpenGL framework; GLEW is skipped there
+#endif
 #include <GLFW/glfw3.h>
 #include <mujoco/mujoco.h>
 
@@ -57,6 +59,11 @@ class MujocoRenderer {
   bool ok() const;
 
   void launchRenderThread();
+
+  // Runs the render loop on the CALLING thread (blocks until the window closes).
+  // Required on macOS, where GLFW needs window creation + event polling on the
+  // main thread. On Linux, use launchRenderThread() (background) instead.
+  void runOnCurrentThread();
 
   void waitForInit() const;
 

@@ -413,7 +413,10 @@ void MujocoSimInterface::initSim() {
 
   if (!headless_) {
     renderer_.reset(new MujocoRenderer(this));
-    renderer_->launchRenderThread();
+#if !defined(__APPLE__)
+    renderer_->launchRenderThread();  // Linux: render on a background thread
+#endif
+    // macOS: renderer is created here; startSim() drives renderLoop() on the main thread.
   }
 }
 
@@ -421,6 +424,11 @@ void MujocoSimInterface::startSim() {
   if (!simInit_) initSim();
   // Simulate in simulate_thread thread while rendering in this thread
   simulate_thread_ = std::thread(&MujocoSimInterface::simulationLoop, this);
+#if defined(__APPLE__)
+  // macOS: GLFW requires the window + event loop on the main thread, so drive the
+  // renderer on this (calling) thread. Blocks until the window is closed.
+  if (!headless_ && renderer_) renderer_->runOnCurrentThread();
+#endif
 }
 
 }  // namespace robot::mujoco_sim_interface

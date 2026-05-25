@@ -179,6 +179,8 @@ void MujocoRenderer::launchRenderThread() {
   render_thread_ = std::thread(&MujocoRenderer::renderLoop, this);
 }
 
+void MujocoRenderer::runOnCurrentThread() { renderLoop(); }
+
 void MujocoRenderer::waitForInit() const {
   while (!init_complete_.load(std::memory_order_acquire)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -332,11 +334,13 @@ void MujocoRenderer::initialize() {
   window_ = glfwCreateWindow(viewportWidth, viewportHeight, "Mujoco Robot Sim", nullptr, nullptr);
   glfwMakeContextCurrent(window_);
 
-  // init glew
+  // init glew (skipped on macOS — the system OpenGL framework provides GL fns)
+#if !defined(__APPLE__)
   if (glewInit() != GLEW_OK) {
     std::cerr << "Failed to initialize GLEW" << std::endl;
     return;
   }
+#endif
 
   glfwSwapInterval(1);
 
