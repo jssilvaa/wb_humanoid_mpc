@@ -151,9 +151,13 @@ add_library(ocs2::mpc ALIAS ocs2_mpc)
 # ddp::Settings struct + ddp::loadSettings (it parses a "ddp" block from task.info).
 # We deliberately do NOT build the DDP solver itself (GaussNewtonDDP/SLQ/ILQR/
 # DDP_DataCollector): DDP_DataCollector references OCS2 API removed in this version
-# (ConstraintBase/CostFunctionBase) — DDP is unmaintained in this fork. DDP_Settings.cpp
-# is self-contained (ocs2_core + boost only).
-add_library(ocs2_ddp STATIC ${OCS2}/ocs2_ddp/src/DDP_Settings.cpp)
+# (ConstraintBase/CostFunctionBase) — DDP is unmaintained in this fork. The two TUs
+# below are settings loaders only (ocs2_core + boost); StrategySettings provides the
+# search_strategy/line_search/levenberg_marquardt loaders that ddp::loadSettings calls.
+add_library(ocs2_ddp STATIC
+  ${OCS2}/ocs2_ddp/src/DDP_Settings.cpp
+  ${OCS2}/ocs2_ddp/src/search_strategy/StrategySettings.cpp
+  ${OCS2}/ocs2_ddp/src/HessianCorrection.cpp)  # hessian_correction::{to,from}String, used by StrategySettings
 target_include_directories(ocs2_ddp PUBLIC ${OCS2}/ocs2_ddp/include)
 target_link_libraries(ocs2_ddp PUBLIC ocs2::core ocs2::oc ocs2::qp_solver ocs2_flags Eigen3::Eigen ${OCS2_BOOST_LIBS})
 if(OpenMP_CXX_FOUND)
@@ -214,3 +218,17 @@ target_link_libraries(humanoid_centroidal_mpc PUBLIC
   ocs2::robotic_tools ocs2::pinocchio_interface ocs2_flags
   PkgConfig::pinocchio Eigen3::Eigen ${OCS2_BOOST_LIBS})
 add_library(humanoid::centroidal_mpc ALIAS humanoid_centroidal_mpc)
+
+# ---- G1 centroidal-MPC solve check (B1 kickoff / definitive 0b proof) -------
+# Instantiates the real G1 centroidal MPC from the G1 config + URDF and runs one
+# SQP solve. First run triggers G1 CppAD codegen (~5-15 min, cached after). Config
+# paths baked in (source tree) but argv-overridable.
+set(G1CFG ${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_centroidal_mpc/config)
+add_executable(g1CentroidalSolveCheck ${CMAKE_SOURCE_DIR}/tools/g1CentroidalSolveCheck.cpp)
+target_link_libraries(g1CentroidalSolveCheck PRIVATE humanoid::centroidal_mpc humanoid::common_mpc ocs2::sqp ocs2_flags)
+target_compile_definitions(g1CentroidalSolveCheck PRIVATE
+  G1_TASK_FILE="${G1CFG}/mpc/task.info"
+  G1_REFERENCE_FILE="${G1CFG}/command/reference.info"
+  G1_GAIT_FILE="${CMAKE_SOURCE_DIR}/humanoid_nmpc/humanoid_common_mpc/config/command/gait.info"
+  G1_URDF_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.urdf")
+set_target_properties(g1CentroidalSolveCheck PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
