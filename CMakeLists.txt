@@ -141,3 +141,21 @@ add_executable(mujocoSimPDStand
 target_link_libraries(mujocoSimPDStand PRIVATE robot::mujoco_sim_interface)
 set_target_properties(mujocoSimPDStand PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# -----------------------------------------------------------------------------
+# humanoid_disturbance_rejection: the ADR contribution. OCS2-independent.
+# A1: the cascaded centroidal-momentum wrench observer (pure Eigen).
+# (A1.2 will add a Pinocchio CCRBA helper for h/c_G.)
+# -----------------------------------------------------------------------------
+set(HDR ${CMAKE_CURRENT_SOURCE_DIR}/humanoid_nmpc/humanoid_disturbance_rejection)
+add_library(humanoid_disturbance_rejection STATIC
+  ${HDR}/src/CentroidalMomentumObserver.cpp)
+target_include_directories(humanoid_disturbance_rejection PUBLIC ${HDR}/include)
+target_link_libraries(humanoid_disturbance_rejection PUBLIC Eigen3::Eigen)
+add_library(humanoid::adr ALIAS humanoid_disturbance_rejection)
+
+# A1 verification: synthetic step-disturbance convergence + detection latency.
+add_executable(observerSelfCheck ${HDR}/test/observerSelfCheck.cpp)
+target_link_libraries(observerSelfCheck PRIVATE humanoid::adr)
+set_target_properties(observerSelfCheck PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
