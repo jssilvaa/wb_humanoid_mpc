@@ -1,6 +1,7 @@
 # Remove accidental build stuff put in here
 build/
 build_standalone/
+external/
 log/
 install/
 

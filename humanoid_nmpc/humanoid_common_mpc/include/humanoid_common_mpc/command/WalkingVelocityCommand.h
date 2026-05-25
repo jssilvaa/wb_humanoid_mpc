@@ -30,7 +30,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma once
 
+#ifndef HUMANOID_MPC_NO_ROS2
 #include <humanoid_mpc_msgs/msg/walking_velocity_command.hpp>
+#endif
 #include "humanoid_common_mpc/common/Types.h"
 
 namespace ocs2::humanoid {
@@ -60,6 +62,7 @@ struct WalkingVelocityCommand {
   vector4_t toVector() { return vector4_t(linear_velocity_x, linear_velocity_y, desired_pelvis_height, angular_velocity_z); };
 };
 
+#ifndef HUMANOID_MPC_NO_ROS2
 inline WalkingVelocityCommand getWalkingVelocityCommandFromMsg(const humanoid_mpc_msgs::msg::WalkingVelocityCommand& msg) {
   WalkingVelocityCommand cmd;
   cmd.linear_velocity_x = std::clamp(msg.linear_velocity_x, -1.0, 1.0);
@@ -68,4 +71,5 @@ inline WalkingVelocityCommand getWalkingVelocityCommandFromMsg(const humanoid_mp
   cmd.angular_velocity_z = std::clamp(msg.angular_velocity_z, -1.0, 1.0);
   return cmd;
 }
+#endif
 }  // namespace ocs2::humanoid

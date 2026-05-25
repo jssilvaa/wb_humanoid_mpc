@@ -181,3 +181,13 @@ add_executable(observerHarness ${HDR}/exe/observerHarness.cpp)
 target_link_libraries(observerHarness PRIVATE humanoid::adr mujoco::mujoco)
 set_target_properties(observerHarness PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# -----------------------------------------------------------------------------
+# Phase 0b (B-track): standalone OCS2 nonlinear-MPC stack. Heavy + built up
+# incrementally, so it is gated OFF by default; enable with -DBUILD_OCS2=ON.
+# The A-track (observer) build is unaffected when OFF.
+# -----------------------------------------------------------------------------
+option(BUILD_OCS2 "Build the standalone OCS2 nonlinear-MPC stack (Phase 0b)" OFF)
+if(BUILD_OCS2)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Ocs2Standalone.cmake)
+endif()

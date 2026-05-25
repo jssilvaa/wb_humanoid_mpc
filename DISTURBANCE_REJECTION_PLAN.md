@@ -39,6 +39,22 @@ Bring a **6D centroidal-momentum external-wrench observer** and a **variable-ine
 - **0b — Full OCS2 SQP standalone (needed for Track B).** Plain-CMake the OCS2 subset incl. the solver: `ocs2_thirdparty` (HPIPM/BLASFEO) → `ocs2_core` (+CppADCodeGen) → `ocs2_oc` → `ocs2_robotic_tools` → `ocs2_pinocchio_interface` → `ocs2_centroidal_model` → `ocs2_sqp`/`ocs2_mpc`/`ocs2_ddp`; then `humanoid_common_mpc` → `humanoid_centroidal_mpc`. This is MORE than vic-mpc did (it hand-rolled SQP, deferred CppAD) — the main build-up. Gate: standalone centroidal MPC solves + drives the MuJoCo G1 (reusing `CentroidalMpcMrtJointController`).
 - **Risk:** 0b's ament→plain-CMake of `ocs2_sqp` + `ocs2_thirdparty` + the CppAD path is the principal unknown; build bottom-up with a compile check at each package.
 
+### Phase 0b — detailed build ladder (mapped 2026-05-25)
+
+Built in `cmake/Ocs2Standalone.cmake`, gated by `-DBUILD_OCS2=ON`, as plain-CMake **static** libs from wb's **full** `lib/ocs2_ros2` sources (`file(GLOB src/*.cpp)`). vic-mpc's `lib/ocs2` CMakeLists are reused as the **find-pattern** only (vic stripped CppAD + stubbed `oc`).
+
+Bottom-up order (compile-gate each): **1** `ocs2_thirdparty` (hdr-only: bundled CppAD + CppADCodeGen + iit) → **2** `ocs2_core` (85 src — *risk gate 1*) → **3** `ocs2_oc` (full, ~30 src — *risk gate 2*, vic only stubbed it) → **4** `ocs2_robotic_tools` → **5** `ocs2_pinocchio_interface` (reuse vic's brew pinocchio/urdfdom recipe) → **6** `ocs2_centroidal_model` → **7** `ocs2_qp_solver` (dense KKT, no HPIPM) → **8/9** `blasfeo`+`hpipm` (reuse vic `external/install`, `TARGET=GENERIC`, link `-lhpipm -lblasfeo -lm`) → **10** `hpipm_catkin` (`HpipmInterface.cpp`) → **11** `ocs2_mpc` → **12** `ocs2_ddp` → **13** `ocs2_sqp` (`SqpMpc` is header-only) → **milestone:** tiny main that builds a trivial `OptimalControlProblem` + `SqpMpc` solve → **14** `humanoid_common_mpc` → **15** `humanoid_centroidal_mpc` (de-ROS: strip `rclcpp`/`ament_*`, replace `humanoid_mpc_msgs`/`ocs2_ros2_interfaces` with plain C++).
+
+**Build gotchas (macOS/clang/C++20):** do NOT use `ocs2_core/cmake/ocs2_cxx_flags.cmake` (forces C++14 + `-Wl,--no-as-needed`). Use C++20 + `-Wno-invalid-partial-specialization` + `-DBOOST_MPL_LIMIT_LIST_SIZE=30`. Brew Boost 1.90 component config is broken → `find_library(boost_{system,filesystem,log,log_setup})` + `/opt/homebrew/include` for headers. CppAD codegen → `.dylib` → `dlopen` validated (ClangCompiler, `-ldl`).
+
+**Status (2026-05-25) — compile + generic-solve DONE; G1 instantiate+solve = B1 kickoff.** Built in `cmake/Ocs2Standalone.cmake`. Deviations from the plan above, as actually built:
+- **C++17, not C++20** for the OCS2 side: `std::result_of` (used by `LinearInterpolation.h`) was removed in C++20. `ocs2_flags` = `-std=gnu++17 -Wno-invalid-partial-specialization -include cassert -O2`. (Observer/MuJoCo side stays C++20; C++17↔C++20 static libs link fine.)
+- **BLASFEO+HPIPM built FROM SOURCE at OCS2's pinned tags** (`build_hpipm.sh` → `external/install`), **not** vic's prebuilt — vic's tag mismatched `d_ocp_qp_dim_set_all`. Needs `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` (CMake 4 dropped `cmake_minimum_required<3.5`).
+- **2 portable clang patches** in the `lib/ocs2_ros2` submodule (tracked in `OCS2_CLANG_PATCHES.md`, left uncommitted there): `MultidimensionalPenalty.cpp` (drop ctor template args), `SqpSolver.cpp` (`to_time_t` on `system_clock`, not `high_resolution_clock`).
+- **`ocs2_ddp` = settings-only** (`DDP_Settings.cpp` alone): the DDP solver proper (`DDP_DataCollector`) references OCS2 API removed in this version; we solve with SQP and only need `ddp::Settings`.
+- **Milestone** = `tools/ocs2SolveCheck.cpp` (OCS2 circular-kinematics OCP; PASS, violations ≈1e-32/1e-21).
+- **de-ROS via `HUMANOID_MPC_NO_ROS2` macro** (the standalone build defines it; ament never does → that build stays byte-identical): guards 2 headers (`WalkingVelocityCommand.h` msg-conversion fn, `GaitScheduleUpdater.h` vestigial rclcpp). `humanoid_centroidal_mpc` excludes `mrt/` (ROS2/robot_runtime runtime bridge). The MRT MuJoCo-drive gate moves to B1.
+
 ---
 
 ## Track A — 6D Centroidal Wrench Observer  *(Task 6)*
