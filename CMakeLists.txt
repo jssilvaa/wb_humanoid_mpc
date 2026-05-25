@@ -175,3 +175,9 @@ add_executable(centroidalSanityCheck ${HDR}/test/centroidalSanityCheck.cpp)
 target_link_libraries(centroidalSanityCheck PRIVATE humanoid::adr)
 set_target_properties(centroidalSanityCheck PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# A2: MuJoCo observer harness — observer vs a real push in the G1 sim.
+add_executable(observerHarness ${HDR}/exe/observerHarness.cpp)
+target_link_libraries(observerHarness PRIVATE humanoid::adr mujoco::mujoco)
+set_target_properties(observerHarness PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
