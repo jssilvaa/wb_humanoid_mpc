@@ -99,6 +99,25 @@ axes[0].set_ylabel("fall rate [%]")
 fig.suptitle("B2 directional generalization (M=10)", y=1.02)
 fig.tight_layout(); fig.savefig(os.path.join(OUT, "fig_b2_directional.pdf"), bbox_inches="tight"); plt.close(fig)
 
+# ----------------------------------------------------------- Figure 3: sustained-load drift (negative)
+# Optional (skipped if the CSVs are absent): shows the FF slows but does not hold a constant load.
+try:
+    sb = load("sus_baseline_30N.csv")
+    so = load("sus_observer_30N.csv")
+    fig, ax = plt.subplots(figsize=(5.4, 3.3))
+    ax.axvspan(2.0, 3.5, color="#ff7f0e", alpha=0.12, lw=0)
+    for rows, lab, col in [(sb, "baseline", "#444444"), (so, "observer FF", "#d62728")]:
+        t = [float(r["t"]) for r in rows]
+        cx = [float(r["com_x"]) for r in rows]
+        ax.plot(t, cx, label=lab, color=col, lw=2.0)
+    ax.text(2.75, 0.02, "push 30 N", ha="center", fontsize=8, color="#b35900")
+    ax.set_xlabel("t [s]"); ax.set_ylabel("CoM x [m]")
+    ax.set_title("Sustained load (30 N, 1.5 s)")
+    ax.grid(alpha=0.3); ax.legend(frameon=False, fontsize=9, loc="upper left")
+    fig.tight_layout(); fig.savefig(os.path.join(OUT, "fig_b2_sustained.pdf")); plt.close(fig)
+except FileNotFoundError:
+    print("(sustained CSVs absent; skipping fig_b2_sustained)")
+
 # --------------------------------------------------------------------------------- Table 1: B1 null
 b1 = load("b1_seeds.csv")
 with open(os.path.join(OUT, "tab_b1.tex"), "w") as f:
