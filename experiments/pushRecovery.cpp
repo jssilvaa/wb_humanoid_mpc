@@ -5,19 +5,22 @@
 // the only addition is the push (MujocoSimInterface::setExternalWrench) + recovery
 // metrics.
 //
-// This is STEP 2a: verify the push perturbs the closed loop and the MPC recovers,
-// using base-pose metrics only. STEP 2b adds the per-step CoM/DCM/momentum CSV
-// (mj_subtreeVel, world-frame, report convention) and the Full-vs-SRBD ablation.
+// STEP 2a verified the push perturbs the closed loop and the MPC recovers (base-pose
+// metrics). STEP 2b (here) adds the per-step CoM/DCM/centroidal-momentum CSV
+// (MujocoSimInterface::getSubtreeCentroidalState -> mj_subtreeVel, world frame, same
+// schema as the observer harness) plus the taskFile arg that selects the Full-vs-SRBD
+// ablation arm.
 //
-// Default push = minor_sagittal (+x 100 N / 0.1 s) from report section 07 -- below the
-// stepping threshold, so the robot should recover in place. argv:
-//   pushRecovery [sim_sec=6] [fx=100] [fy=0] [t_push=2.0] [dur=0.1]
+// Default push = minor_sagittal (+x 100 N / 0.1 s) from report section 07. For the B1
+// ablation it is run SUB-THRESHOLD (30-70 N), where the baseline recovers in place. argv:
+//   pushRecovery [sim_sec=6] [fx=100] [fy=0] [t_push=2.0] [dur=0.1] [taskFile] [csvPath]
 // (real wall-clock seconds; the sim thread runs in real time.)
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -30,6 +33,7 @@
 #include <humanoid_centroidal_mpc/command/CentroidalMpcTargetTrajectoriesCalculator.h>
 #include <humanoid_centroidal_mpc/mrt/CentroidalMpcMrtJointController.h>
 #include <humanoid_common_mpc/reference_manager/ProceduralMpcMotionManager.h>
+#include <mujoco/mujoco.h>
 #include <mujoco_sim_interface/MujocoSimInterface.h>
 #include <robot_model/RobotDescription.h>
 #include <robot_model/RobotState.h>
@@ -43,7 +47,10 @@ int main(int argc, char** argv) {
   const double fy = (argc > 3) ? std::stod(argv[3]) : 0.0;       // push force y [N]
   const double t_push = (argc > 4) ? std::stod(argv[4]) : 2.0;   // push onset [s]
   const double dur = (argc > 5) ? std::stod(argv[5]) : 0.1;      // push duration [s]
-  const std::string taskFile = G1_TASK_FILE;
+  // taskFile selects the ablation arm: G1_TASK_FILE (Full centroidal) by default, or pass
+  // .../task_srbd.info for the SRBD arm (distinct robotName -> distinct codegen cache).
+  const std::string taskFile = (argc > 6 && std::string(argv[6]).size()) ? argv[6] : G1_TASK_FILE;
+  const std::string csvPath = (argc > 7 && std::string(argv[7]).size()) ? argv[7] : "";  // empty -> no CSV
   const std::string urdfFile = G1_URDF_FILE;
   const std::string referenceFile = G1_REFERENCE_FILE;
   const std::string gaitFile = G1_GAIT_FILE;
@@ -114,12 +121,27 @@ int main(int argc, char** argv) {
   robotInterface.startSim();
 
   // 7. Control loop, wall-clock bounded. Apply the push during its window; track the
-  //    base-pose response. baseline xy is sampled just before push onset.
+  //    base-pose + CoM/DCM response. baselines are sampled just before push onset.
   const vector3_t pushForce(fx, fy, 0.0);
+  const double totalMass = mj_getTotalmass(robotInterface.getModel());
+  const double g = std::abs(robotInterface.getModel()->opt.gravity[2]);
   double min_z = 1e9, last_z = 0.0, peak_disp = 0.0;
   double base_x0 = 0.0, base_y0 = 0.0;
+  double com_x0 = 0.0, com_y0 = 0.0, dcm_x0 = 0.0, dcm_y0 = 0.0;
+  double peak_com_dev = 0.0, peak_dcm_dev = 0.0;
   bool baselineSet = false, pushApplied = false, pushCleared = false, fell = false;
   long iters = 0;
+
+  // Optional per-step CSV (CoM/DCM/centroidal momentum, world frame). Schema matches the
+  // observer harness: h = [totalMass * v_com ; angmom]; DCM = com_xy + v_com_xy / omega.
+  std::ofstream csv;
+  if (!csvPath.empty()) {
+    csv.open(csvPath);
+    csv.precision(9);
+    csv << "t,com_x,com_y,com_z,vcom_x,vcom_y,vcom_z,dcm_x,dcm_y,"
+           "h_lin_x,h_lin_y,h_lin_z,h_ang_x,h_ang_y,h_ang_z,base_x,base_y,base_z,pushing\n";
+    std::cout << "  logging CoM/DCM/momentum CSV -> " << csvPath << "\n";
+  }
   const auto loopStart = std::chrono::steady_clock::now();
   const auto loopEnd = loopStart + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(sim_T));
   auto nextLog = loopStart;
@@ -135,10 +157,21 @@ int main(int argc, char** argv) {
     robotInterface.applyJointAction();
     ++iters;
 
+    // CoM / DCM / centroidal momentum from MuJoCo subtree momentum (ground truth, world frame).
+    vector3_t com, vcom, angmom;
+    robotInterface.getSubtreeCentroidalState(com, vcom, angmom);
+    const double omega = std::sqrt(g / std::max(com.z(), 1e-3));  // DCM natural frequency sqrt(g / com_z)
+    const double dcm_x = com.x() + vcom.x() / omega;
+    const double dcm_y = com.y() + vcom.y() / omega;
+
     // Push schedule (idempotent edges).
     if (!baselineSet && t >= t_push - 0.01) {
       base_x0 = st.getRootPositionInWorldFrame().x();
       base_y0 = st.getRootPositionInWorldFrame().y();
+      com_x0 = com.x();
+      com_y0 = com.y();
+      dcm_x0 = dcm_x;
+      dcm_y0 = dcm_y;
       baselineSet = true;
     }
     if (!pushApplied && t >= t_push) {
@@ -158,6 +191,16 @@ int main(int argc, char** argv) {
     if (baselineSet) {
       const double dx = p.x() - base_x0, dy = p.y() - base_y0;
       peak_disp = std::max(peak_disp, std::sqrt(dx * dx + dy * dy));
+      const double cdx = com.x() - com_x0, cdy = com.y() - com_y0;
+      peak_com_dev = std::max(peak_com_dev, std::sqrt(cdx * cdx + cdy * cdy));
+      const double xdx = dcm_x - dcm_x0, xdy = dcm_y - dcm_y0;
+      peak_dcm_dev = std::max(peak_dcm_dev, std::sqrt(xdx * xdx + xdy * xdy));
+    }
+    if (csv.is_open()) {
+      csv << t << ',' << com.x() << ',' << com.y() << ',' << com.z() << ',' << vcom.x() << ',' << vcom.y() << ',' << vcom.z()
+          << ',' << dcm_x << ',' << dcm_y << ',' << totalMass * vcom.x() << ',' << totalMass * vcom.y() << ','
+          << totalMass * vcom.z() << ',' << angmom.x() << ',' << angmom.y() << ',' << angmom.z() << ',' << p.x() << ',' << p.y()
+          << ',' << p.z() << ',' << (pushApplied && !pushCleared ? 1 : 0) << '\n';
     }
     if (now >= nextLog) {
       std::cout << "  t=" << t << " s  base=(" << p.x() << ", " << p.y() << ", " << p.z() << ")" << std::endl;
@@ -177,12 +220,15 @@ int main(int argc, char** argv) {
   std::cout << "--- result ---\n";
   std::cout << "  control steps : " << iters << " over " << wall << " s wall  -> " << (iters / wall) << " Hz\n";
   std::cout << "  peak base horiz displacement : " << peak_disp << " m\n";
+  std::cout << "  peak CoM  horiz deviation    : " << peak_com_dev << " m\n";
+  std::cout << "  peak DCM  horiz deviation    : " << peak_dcm_dev << " m\n";
   std::cout << "  final base z  : " << last_z << " m   min base z = " << min_z << " m\n";
   const bool recovered = !fell && min_z > 0.5 && peak_disp < 0.12;
   std::cout << (recovered ? "[pushRecovery] PASS: MPC rejected the push in place\n"
               : fell      ? "[pushRecovery] FAIL: robot fell\n"
                           : "[pushRecovery] NOTE: stayed up but left the in-regime bound (peak_disp>=0.12 m)\n");
 
+  if (csv.is_open()) csv.close();  // flush before _Exit (which skips destructors and stream flushing)
   std::cout.flush();
   std::cerr.flush();
   std::_Exit(recovered ? 0 : 2);  // sidestep the MRT controller's non-terminating solver thread (see standingClosedLoop)

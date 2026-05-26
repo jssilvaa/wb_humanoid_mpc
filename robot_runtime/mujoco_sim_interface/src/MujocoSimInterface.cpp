@@ -452,4 +452,12 @@ void MujocoSimInterface::clearExternalWrenches() {
   mju_zero(mujocoData_->xfrc_applied, 6 * mujocoModel_->nbody);
 }
 
+void MujocoSimInterface::getSubtreeCentroidalState(vector3_t& com, vector3_t& comVelocity, vector3_t& angularMomentum) {
+  std::lock_guard<std::mutex> lock(mujocoMutex_);    // same mutex mj_step holds in simulationStep()
+  mj_subtreeVel(mujocoModel_, mujocoData_);          // fills subtree_com / subtree_linvel / subtree_angmom (world frame)
+  com << mujocoData_->subtree_com[0], mujocoData_->subtree_com[1], mujocoData_->subtree_com[2];
+  comVelocity << mujocoData_->subtree_linvel[0], mujocoData_->subtree_linvel[1], mujocoData_->subtree_linvel[2];
+  angularMomentum << mujocoData_->subtree_angmom[0], mujocoData_->subtree_angmom[1], mujocoData_->subtree_angmom[2];
+}
+
 }  // namespace robot::mujoco_sim_interface

@@ -96,6 +96,17 @@ class MujocoSimInterface : public robot::model::RobotHWInterfaceBase {
   /** Zero all applied external wrenches. Thread-safe. */
   void clearExternalWrenches();
 
+  /**
+   * Whole-body centroidal quantities from MuJoCo's subtree momentum (mj_subtreeVel),
+   * world frame, about the whole-body CoM. Fills:
+   *   com             : center-of-mass position
+   *   comVelocity     : CoM linear velocity v_com  (linear momentum = totalMass * comVelocity)
+   *   angularMomentum : angular momentum about the CoM
+   * Thread-safe (takes the sim mutex). Mutates only MuJoCo's diagnostic subtree_* fields.
+   * Used for disturbance-rejection evaluation (CoM/DCM logging); unused by the ROS 2 build.
+   */
+  void getSubtreeCentroidalState(vector3_t& com, vector3_t& comVelocity, vector3_t& angularMomentum);
+
  private:
   void setupJointIndexMaps();
 
