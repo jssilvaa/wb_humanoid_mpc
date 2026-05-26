@@ -24,7 +24,11 @@ with open(src) as f:
 
 
 def fell(r):
-    return r["result"] != "PASS" or float(r["min_base_z_m"]) < 0.5
+    # Fall = base z dropped below 0.5 m. This catches the harness's z<0.3 "FAIL" trigger AND
+    # near-collapses that dipped below 0.5 without hitting 0.3 (which "result==FAIL" would miss and
+    # "result!=PASS" would conflate with genuine NOTEs). A NOTE that stayed up (min_z>0.5 but left
+    # the 0.12 m in-regime bound -- common for lateral pushes) is a SURVIVOR, not a fall.
+    return float(r["min_base_z_m"]) < 0.5
 
 
 def wilson(k, n, z=1.96):
