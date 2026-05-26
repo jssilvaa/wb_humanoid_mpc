@@ -5,6 +5,9 @@ external/
 log/
 install/
 
+# Disturbance-rejection experiment outputs (CSVs, plots) -- harness code is tracked, results are not
+experiments/results/
+
 # Prerequisites
 *.d
 

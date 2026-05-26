@@ -85,6 +85,17 @@ class MujocoSimInterface : public robot::model::RobotHWInterfaceBase {
 
   const MujocoSimConfig& getConfig() const { return config_; }
 
+  /**
+   * Apply an external wrench (world frame) to a named body via MuJoCo's xfrc_applied,
+   * for scripted disturbance pushes. Thread-safe (takes the sim mutex). The wrench
+   * PERSISTS until changed or cleared (MuJoCo semantics: xfrc_applied is not auto-reset
+   * each step). Throws if bodyName is unknown. Additive; unused by the ROS 2 build.
+   */
+  void setExternalWrench(const std::string& bodyName, const vector3_t& force, const vector3_t& torque = vector3_t::Zero());
+
+  /** Zero all applied external wrenches. Thread-safe. */
+  void clearExternalWrenches();
+
  private:
   void setupJointIndexMaps();
 

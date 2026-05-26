@@ -431,4 +431,25 @@ void MujocoSimInterface::startSim() {
 #endif
 }
 
+/******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
+
+void MujocoSimInterface::setExternalWrench(const std::string& bodyName, const vector3_t& force, const vector3_t& torque) {
+  const int bodyId = mj_name2id(mujocoModel_, mjOBJ_BODY, bodyName.c_str());
+  if (bodyId < 0) {
+    throw std::runtime_error("MujocoSimInterface::setExternalWrench: unknown body '" + bodyName + "'");
+  }
+  std::lock_guard<std::mutex> lock(mujocoMutex_);  // same mutex mj_step holds in simulationStep()
+  for (int i = 0; i < 3; ++i) {
+    mujocoData_->xfrc_applied[6 * bodyId + i] = force(i);
+    mujocoData_->xfrc_applied[6 * bodyId + 3 + i] = torque(i);
+  }
+}
+
+void MujocoSimInterface::clearExternalWrenches() {
+  std::lock_guard<std::mutex> lock(mujocoMutex_);
+  mju_zero(mujocoData_->xfrc_applied, 6 * mujocoModel_->nbody);
+}
+
 }  // namespace robot::mujoco_sim_interface

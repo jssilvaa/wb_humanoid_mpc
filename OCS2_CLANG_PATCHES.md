@@ -45,3 +45,21 @@ replaced with `std::invoke_result` (available since C++17, works in both standar
 (which use C++20 `concepts`/`span` via `IDMapBase.h`) in one TU — the closed-loop bridge
 needs both. The controller also uses `std::jthread` (C++20). This patch is what makes OCS2
 C++20-clean. Verified: full OCS2+MPC rebuild at C++20 is clean, G1 solve unchanged (dyn-viol 9.1e-6).
+
+## 4. `ocs2_core/.../CppAdInterface.cpp` — genuine OOB bug (NOT clang-specific) — portable
+`CppAdInterface::getGaussNewtonApproximation` builds the sparse Gauss-Newton Hessian
+`H = JᵀJ` by walking the sparse-Jacobian `rows[]`/`cols[]` arrays (length `nnzJacobian_`).
+The inner off-diagonal loop reads `rows[j]` with **no upper bound on `j`**:
+```
+size_t j = i + 1;
+while (rows[j] == row_i) { ... ++j; }   // rows[] has only nnzJacobian_ entries
+```
+For the last nonzero (`i = nnzJacobian_-1`) this reads `rows[nnzJacobian_]` — out of bounds.
+Latent: usually the OOB read returns garbage `≠ row_i` and the loop exits harmlessly, so it
+never crashed with the shipped cost terms. **Enabling the ICP/capturability cost changed the
+Jacobian sparsity → the OOB read chained into unmapped memory → SIGSEGV** in every SQP worker
+(found via lldb: `getGaussNewtonApproximation` +1740, EXC_BAD_ACCESS). **Fix (portable):**
+```
+while (j < nnzJacobian_ && rows[j] == row_i) { ... }
+```
+This is a real upstream bug, not a clang/macOS issue — worth upstreaming to ocs2_ros2.

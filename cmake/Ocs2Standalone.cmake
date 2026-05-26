@@ -238,3 +238,32 @@ target_compile_definitions(g1CentroidalSolveCheck PRIVATE
   G1_GAIT_FILE="${CMAKE_SOURCE_DIR}/humanoid_nmpc/humanoid_common_mpc/config/command/gait.info"
   G1_URDF_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.urdf")
 set_target_properties(g1CentroidalSolveCheck PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ---- B1 standing closed-loop harness (centroidal MPC closed on the MuJoCo G1) ----
+# Non-ROS2 CentroidalMpcRobotSim: drives the real MPC through the MRT controller on
+# the headless MuJoCo sim and checks the G1 stays upright. Needs both the MPC libs
+# (this file) and robot::mujoco_sim_interface (root CMakeLists, defined before this
+# include). Same G1 config paths as the solve check + the MuJoCo scene xml.
+add_executable(standingClosedLoop ${CMAKE_SOURCE_DIR}/experiments/standingClosedLoop.cpp)
+target_link_libraries(standingClosedLoop PRIVATE
+  humanoid::centroidal_mpc humanoid::common_mpc robot::mujoco_sim_interface ocs2::sqp ocs2_flags)
+target_compile_definitions(standingClosedLoop PRIVATE
+  G1_TASK_FILE="${G1CFG}/mpc/task.info"
+  G1_REFERENCE_FILE="${G1CFG}/command/reference.info"
+  G1_GAIT_FILE="${CMAKE_SOURCE_DIR}/humanoid_nmpc/humanoid_common_mpc/config/command/gait.info"
+  G1_URDF_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.urdf"
+  G1_SCENE_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.xml")
+set_target_properties(standingClosedLoop PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ---- B1 push-recovery harness (scripted xfrc disturbance on the closed-loop G1) ----
+# Same wiring as standingClosedLoop + MujocoSimInterface::setExternalWrench push.
+add_executable(pushRecovery ${CMAKE_SOURCE_DIR}/experiments/pushRecovery.cpp)
+target_link_libraries(pushRecovery PRIVATE
+  humanoid::centroidal_mpc humanoid::common_mpc robot::mujoco_sim_interface ocs2::sqp ocs2_flags)
+target_compile_definitions(pushRecovery PRIVATE
+  G1_TASK_FILE="${G1CFG}/mpc/task.info"
+  G1_REFERENCE_FILE="${G1CFG}/command/reference.info"
+  G1_GAIT_FILE="${CMAKE_SOURCE_DIR}/humanoid_nmpc/humanoid_common_mpc/config/command/gait.info"
+  G1_URDF_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.urdf"
+  G1_SCENE_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.xml")
+set_target_properties(pushRecovery PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
