@@ -159,7 +159,11 @@ void CentroidalMpcInterface::setupOptimalControlProblem() {
   // Dynamics
   std::unique_ptr<SystemDynamicsBase> dynamicsPtr;
   const std::string modelName = "dynamics";
-  dynamicsPtr.reset(new CentroidalDynamicsAD(*pinocchioInterfacePtr_, centroidalModelInfo_, modelName, modelSettings_));
+  // Shared external-wrench feedforward buffer (ADR / B2); zero unless an ExternalWrenchFeedforward
+  // module writes it. The cloned dynamics across solver threads all read this same buffer.
+  externalWrenchFeedforwardPtr_ = std::make_shared<ExternalWrenchBuffer>();
+  dynamicsPtr.reset(new CentroidalDynamicsAD(*pinocchioInterfacePtr_, centroidalModelInfo_, modelName, modelSettings_,
+                                             externalWrenchFeedforwardPtr_));
 
   problemPtr_->dynamicsPtr = std::move(dynamicsPtr);
 

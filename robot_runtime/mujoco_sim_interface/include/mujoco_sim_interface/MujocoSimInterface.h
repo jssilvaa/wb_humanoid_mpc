@@ -107,6 +107,13 @@ class MujocoSimInterface : public robot::model::RobotHWInterfaceBase {
    */
   void getSubtreeCentroidalState(vector3_t& com, vector3_t& comVelocity, vector3_t& angularMomentum);
 
+  /**
+   * World-frame center-of-mass position (xipos) of a named body. Thread-safe. Throws if the
+   * body is unknown. Used to place the moment arm of the oracle external wrench in
+   * disturbance-rejection evaluation (ADR / B2); unused by the ROS 2 build.
+   */
+  vector3_t getBodyComPosition(const std::string& bodyName);
+
  private:
   void setupJointIndexMaps();
 

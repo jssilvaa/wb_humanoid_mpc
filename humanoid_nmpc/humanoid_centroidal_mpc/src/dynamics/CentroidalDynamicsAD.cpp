@@ -30,6 +30,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "humanoid_centroidal_mpc/dynamics/CentroidalDynamicsAD.h"
 
+#include <cmath>
+
 namespace ocs2::humanoid {
 
 /******************************************************************************************************/
@@ -38,19 +40,31 @@ namespace ocs2::humanoid {
 CentroidalDynamicsAD::CentroidalDynamicsAD(const PinocchioInterface& pinocchioInterface,
                                            const CentroidalModelInfo& info,
                                            const std::string& modelName,
-                                           const ModelSettings& modelSettings)
+                                           const ModelSettings& modelSettings,
+                                           std::shared_ptr<const ExternalWrenchBuffer> externalWrenchPtr)
     : pinocchioCentroidalDynamicsAd_(pinocchioInterface,
                                      info,
                                      modelName,
                                      modelSettings.modelFolderCppAd,
                                      modelSettings.recompileLibrariesCppAd,
-                                     modelSettings.verboseCppAd) {}
+                                     modelSettings.verboseCppAd),
+      robotMass_(info.robotMass),
+      externalWrenchPtr_(externalWrenchPtr ? std::move(externalWrenchPtr)
+                                           : std::make_shared<const ExternalWrenchBuffer>()) {}
 
 /******************************************************************************************************/
 /******************************************************************************************************/
 /******************************************************************************************************/
 vector_t CentroidalDynamicsAD::computeFlowMap(scalar_t time, const vector_t& state, const vector_t& input, const PreComputation& preComp) {
-  return pinocchioCentroidalDynamicsAd_.getValue(time, state, input);
+  vector_t stateDerivative = pinocchioCentroidalDynamicsAd_.getValue(time, state, input);
+  // External-wrench feedforward (ADR / B2): W_hat = [f; tau] enters the normalized centroidal-
+  // momentum rate (first 6 states = [linear; angular] momentum / mass) as +decay*W_hat/mass.
+  // decay = exp(-(time - t0)/T) is the assumed disturbance persistence over the horizon (ZOH when
+  // invT = 0); exogenous in (x, u) -> affine. Zero unless set by an ExternalWrenchFeedforward module.
+  const scalar_t s = (time > externalWrenchPtr_->t0) ? (time - externalWrenchPtr_->t0) : scalar_t(0);
+  const scalar_t decay = std::exp(-s * externalWrenchPtr_->invT);
+  stateDerivative.head<6>() += (decay / robotMass_) * externalWrenchPtr_->wrench;
+  return stateDerivative;
 }
 
 /******************************************************************************************************/
@@ -60,7 +74,12 @@ VectorFunctionLinearApproximation CentroidalDynamicsAD::linearApproximation(scal
                                                                             const vector_t& state,
                                                                             const vector_t& input,
                                                                             const PreComputation& preComp) {
-  return pinocchioCentroidalDynamicsAd_.getLinearApproximation(time, state, input);
+  VectorFunctionLinearApproximation approx = pinocchioCentroidalDynamicsAd_.getLinearApproximation(time, state, input);
+  // W_hat is exogenous (independent of state/input): only the affine term shifts, Jacobians unchanged.
+  const scalar_t s = (time > externalWrenchPtr_->t0) ? (time - externalWrenchPtr_->t0) : scalar_t(0);
+  const scalar_t decay = std::exp(-s * externalWrenchPtr_->invT);
+  approx.f.head<6>() += (decay / robotMass_) * externalWrenchPtr_->wrench;
+  return approx;
 }
 
 }  // namespace ocs2::humanoid

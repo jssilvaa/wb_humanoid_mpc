@@ -30,10 +30,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma once
 
+#include <memory>
+
 #include <ocs2_centroidal_model/PinocchioCentroidalDynamicsAD.h>
 #include <ocs2_core/dynamics/SystemDynamicsBase.h>
 #include <ocs2_pinocchio_interface/PinocchioInterface.h>
 
+#include "humanoid_centroidal_mpc/dynamics/ExternalWrenchBuffer.h"
 #include "humanoid_common_mpc/common/ModelSettings.h"
 
 namespace ocs2::humanoid {
@@ -43,7 +46,8 @@ class CentroidalDynamicsAD final : public SystemDynamicsBase {
   CentroidalDynamicsAD(const PinocchioInterface& pinocchioInterface,
                        const CentroidalModelInfo& info,
                        const std::string& modelName,
-                       const ModelSettings& modelSettings);
+                       const ModelSettings& modelSettings,
+                       std::shared_ptr<const ExternalWrenchBuffer> externalWrenchPtr = nullptr);
 
   ~CentroidalDynamicsAD() override = default;
   CentroidalDynamicsAD* clone() const override { return new CentroidalDynamicsAD(*this); }
@@ -58,6 +62,11 @@ class CentroidalDynamicsAD final : public SystemDynamicsBase {
   CentroidalDynamicsAD(const CentroidalDynamicsAD& rhs) = default;
 
   PinocchioCentroidalDynamicsAD pinocchioCentroidalDynamicsAd_;
+  scalar_t robotMass_;
+  // External-wrench feedforward buffer (W_hat about CoM + horizon decay), added to the normalized
+  // centroidal-momentum rate as +decay*wrench/mass. Shared with ExternalWrenchFeedforward, which
+  // freezes it once per solve. Zero by default (no feedforward). See B2 / DISTURBANCE_REJECTION_PLAN.
+  std::shared_ptr<const ExternalWrenchBuffer> externalWrenchPtr_;
 };
 
 }  // namespace ocs2::humanoid

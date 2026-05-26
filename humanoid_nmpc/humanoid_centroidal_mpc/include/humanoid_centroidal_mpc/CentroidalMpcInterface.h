@@ -42,6 +42,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_sqp/SqpSettings.h>
 
 #include "humanoid_centroidal_mpc/common/CentroidalMpcRobotModel.h"
+#include "humanoid_centroidal_mpc/dynamics/ExternalWrenchBuffer.h"
 #include "humanoid_centroidal_mpc/initialization/CentroidalWeightCompInitializer.h"
 #include "humanoid_common_mpc/common/ModelSettings.h"
 #include "humanoid_common_mpc/reference_manager/ProceduralMpcMotionManager.h"
@@ -81,6 +82,11 @@ class CentroidalMpcInterface final : public RobotInterface {
   const CentroidalModelInfo& getCentroidalModelInfo() const { return centroidalModelInfo_; }
   std::shared_ptr<SwitchedModelReferenceManager> getSwitchedModelReferenceManagerPtr() const { return referenceManagerPtr_; }
 
+  // Shared buffer holding the external-wrench feedforward [f; tau] (about CoM, world frame)
+  // injected into the centroidal momentum-rate dynamics. Written once per solve by an
+  // ExternalWrenchFeedforward synchronized module (ADR / B2); zero by default (no feedforward).
+  std::shared_ptr<ExternalWrenchBuffer> getExternalWrenchFeedforwardPtr() const { return externalWrenchFeedforwardPtr_; }
+
   const CentroidalWeightCompInitializer& getInitializer() const override { return *initializerPtr_; }
   std::shared_ptr<ReferenceManagerInterface> getReferenceManagerPtr() const override { return referenceManagerPtr_; }
 
@@ -114,6 +120,7 @@ class CentroidalMpcInterface final : public RobotInterface {
   CentroidalModelInfo centroidalModelInfo_;
 
   std::unique_ptr<OptimalControlProblem> problemPtr_;
+  std::shared_ptr<ExternalWrenchBuffer> externalWrenchFeedforwardPtr_;
   std::shared_ptr<SwitchedModelReferenceManager> referenceManagerPtr_;
 
   std::unique_ptr<CentroidalMpcRobotModel<scalar_t>> mpcRobotModelPtr_;

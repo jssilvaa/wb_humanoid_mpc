@@ -460,4 +460,13 @@ void MujocoSimInterface::getSubtreeCentroidalState(vector3_t& com, vector3_t& co
   angularMomentum << mujocoData_->subtree_angmom[0], mujocoData_->subtree_angmom[1], mujocoData_->subtree_angmom[2];
 }
 
+vector3_t MujocoSimInterface::getBodyComPosition(const std::string& bodyName) {
+  const int bodyId = mj_name2id(mujocoModel_, mjOBJ_BODY, bodyName.c_str());
+  if (bodyId < 0) {
+    throw std::runtime_error("MujocoSimInterface::getBodyComPosition: unknown body '" + bodyName + "'");
+  }
+  std::lock_guard<std::mutex> lock(mujocoMutex_);
+  return vector3_t(mujocoData_->xipos[3 * bodyId], mujocoData_->xipos[3 * bodyId + 1], mujocoData_->xipos[3 * bodyId + 2]);
+}
+
 }  // namespace robot::mujoco_sim_interface

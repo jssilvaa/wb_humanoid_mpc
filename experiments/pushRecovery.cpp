@@ -13,8 +13,9 @@
 //
 // Default push = minor_sagittal (+x 100 N / 0.1 s) from report section 07. For the B1
 // ablation it is run SUB-THRESHOLD (30-70 N), where the baseline recovers in place. argv:
-//   pushRecovery [sim_sec=6] [fx=100] [fy=0] [t_push=2.0] [dur=0.1] [taskFile] [csvPath]
-// (real wall-clock seconds; the sim thread runs in real time.)
+//   pushRecovery [sim_sec=6] [fx=100] [fy=0] [t_push=2.0] [dur=0.1] [taskFile] [csvPath] [ff_mode=0] [ff_T=inf]
+// ff_mode: 0 = off (baseline), 1 = oracle external-wrench feedforward (B2.0); ff_T = horizon decay
+// time T [s] for the feedforward (inf = ZOH). (real wall-clock seconds; the sim thread runs in real time.)
 
 #include <algorithm>
 #include <chrono>
@@ -22,6 +23,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -32,6 +34,7 @@
 #include <humanoid_centroidal_mpc/CentroidalMpcInterface.h>
 #include <humanoid_centroidal_mpc/command/CentroidalMpcTargetTrajectoriesCalculator.h>
 #include <humanoid_centroidal_mpc/mrt/CentroidalMpcMrtJointController.h>
+#include <humanoid_centroidal_mpc/synchronized_module/ExternalWrenchFeedforward.h>
 #include <humanoid_common_mpc/reference_manager/ProceduralMpcMotionManager.h>
 #include <mujoco/mujoco.h>
 #include <mujoco_sim_interface/MujocoSimInterface.h>
@@ -51,6 +54,8 @@ int main(int argc, char** argv) {
   // .../task_srbd.info for the SRBD arm (distinct robotName -> distinct codegen cache).
   const std::string taskFile = (argc > 6 && std::string(argv[6]).size()) ? argv[6] : G1_TASK_FILE;
   const std::string csvPath = (argc > 7 && std::string(argv[7]).size()) ? argv[7] : "";  // empty -> no CSV
+  const int ff_mode = (argc > 8) ? std::stoi(argv[8]) : 0;  // external-wrench feedforward: 0 = off (baseline), 1 = oracle
+  const double ff_T = (argc > 9) ? std::stod(argv[9]) : std::numeric_limits<double>::infinity();  // horizon decay T [s]; inf = ZOH
   const std::string urdfFile = G1_URDF_FILE;
   const std::string referenceFile = G1_REFERENCE_FILE;
   const std::string gaitFile = G1_GAIT_FILE;
@@ -77,6 +82,16 @@ int main(int argc, char** argv) {
 
   mpc.getSolverPtr()->setReferenceManager(interface.getReferenceManagerPtr());
   mpc.getSolverPtr()->addSynchronizedModule(motionManager);
+
+  // External-wrench feedforward (ADR / B2). ff_mode 1 = oracle: the harness feeds the TRUE
+  // scripted wrench (see loop). The module freezes the latest estimate into the dynamics
+  // buffer once per solve (ZOH over the horizon); the cloned dynamics add it as +W/mass.
+  std::shared_ptr<ExternalWrenchFeedforward> ffModule;
+  if (ff_mode > 0) {
+    ffModule = std::make_shared<ExternalWrenchFeedforward>(interface.getExternalWrenchFeedforwardPtr(), ff_T, /*trust=*/1.0);
+    mpc.getSolverPtr()->addSynchronizedModule(ffModule);
+    std::cout << "external-wrench feedforward ENABLED (ff_mode=" << ff_mode << ", oracle, horizon decay T=" << ff_T << " s)\n";
+  }
 
   // 3. Sim initial state = MPC nominal initial state.
   robot::model::RobotDescription robotDescription(urdfFile);
@@ -183,6 +198,18 @@ int main(int argc, char** argv) {
       robotInterface.clearExternalWrenches();
       pushCleared = true;
       std::cout << "  push OFF @t=" << t << " s\n" << std::flush;
+    }
+
+    // Oracle external-wrench feedforward (ff_mode 1): feed the TRUE wrench about the CoM during
+    // the push window (perfect estimate + timing), zero otherwise. com is the current CoM.
+    if (ffModule) {
+      vector_t wFF = vector_t::Zero(6);
+      if (pushApplied && !pushCleared) {
+        const vector3_t xApp = robotInterface.getBodyComPosition("torso_link");
+        wFF.head<3>() = pushForce;
+        wFF.tail<3>() = (xApp - com).cross(pushForce);
+      }
+      ffModule->setWrench(wFF);
     }
 
     const vector3_t p = st.getRootPositionInWorldFrame();
