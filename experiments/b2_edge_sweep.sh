@@ -5,13 +5,13 @@
 # fall threshold is the robust, binary KPI where the feedforward's value should show. Runs that fall
 # exit early (base z < 0.3), so fallen cells are quicker.
 #
-# Usage: experiments/b2_edge_sweep.sh [M=8]
+# Usage: experiments/b2_edge_sweep.sh [M=12]
 set -uo pipefail
 ROOT=/Users/josesilvaa/wb_humanoid_mpc
 BIN="$ROOT/build_standalone/bin/pushRecovery"
 OUT="$ROOT/experiments/results/b2_edge_sweep.csv"
-M="${1:-8}"
-MAGS=(70 90 110 130)
+M="${1:-12}"
+MAGS=(70 80 90 100 110)
 SPECS=("0 inf" "1 0.27")   # baseline vs oracle FF at the knee T
 
 cd "$ROOT/build_standalone"   # codegen cache path is CWD-relative
