@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Consolidate the B1 + B2 disturbance-rejection results into report-ready figures + LaTeX tables.
+
+Reads the seed/sweep CSVs in experiments/results/ (jitter-seeded, gitignored) and writes, to
+experiments/report/:
+  fig_b2_sagittal.pdf     -- B2 headline: sagittal fall rate vs push magnitude, 3 arms (+ decay-T knee)
+  fig_b2_directional.pdf  -- B2 generalization: lateral + diagonal fall rate, baseline vs observer
+  tab_b1.tex              -- B1 Full-vs-SRBD inertia ablation (null result)
+  tab_b2.tex              -- B2 reliable thresholds + peak-CoM reduction summary
+
+Fall = base z < 0.5 m (report section 07). Stats over RECOVERED runs for excursions; fall rate is a
+binomial proportion with Wilson 95% CI. Run after the b1/b2 campaigns. Page-capped report: include a
+subset as needed; fig_b2_sagittal is the headline.
+"""
+import csv
+import math
+import os
+import statistics
+from collections import defaultdict
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RES = os.path.join(HERE, "results")
+OUT = os.path.join(HERE, "report")
+os.makedirs(OUT, exist_ok=True)
+
+
+def load(name):
+    with open(os.path.join(RES, name)) as f:
+        return list(csv.DictReader(f))
+
+
+def fell(r):
+    return float(r["min_base_z_m"]) < 0.5
+
+
+def fall_rate(rows):
+    n = len(rows)
+    k = sum(fell(r) for r in rows)
+    p = k / n if n else float("nan")
+    z = 1.96
+    if n == 0:
+        return p, 0.0, 0.0
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return p, max(0.0, c - h), min(1.0, c + h)
+
+
+def med_com(rows):
+    surv = [float(r["peak_com_dev_m"]) for r in rows if not fell(r)]
+    return statistics.median(surv) if surv else float("nan")
+
+
+# ----------------------------------------------------------------------------- Figure 1: B2 sagittal
+edge = load("b2_edge_sweep.csv")
+ff = load("b2_ff_sweep.csv")
+mags = sorted({int(r["fx_N"]) for r in edge})
+arms = [("0", "baseline", "#444444", "o"), ("1", "oracle FF", "#1f77b4", "s"), ("2", "observer FF", "#d62728", "^")]
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.5, 3.6))
+for ffmode, lab, col, mk in arms:
+    rate, lo, hi = [], [], []
+    for m in mags:
+        rows = [r for r in edge if int(r["fx_N"]) == m and r["ff_mode"] == ffmode]
+        p, l, h = fall_rate(rows)
+        rate.append(100 * p); lo.append(100 * (p - l)); hi.append(100 * (h - p))
+    ax1.errorbar(mags, rate, yerr=[lo, hi], label=lab, color=col, marker=mk, capsize=3, lw=1.8, ms=6)
+ax1.set_xlabel("sagittal push magnitude [N]"); ax1.set_ylabel("fall rate [%]")
+ax1.set_title("(a) Recovery vs push (sagittal, M=12)"); ax1.set_ylim(-5, 105); ax1.grid(alpha=0.3); ax1.legend(frameon=False, fontsize=9)
+
+# decay-T knee at 50 N: median peak CoM per condition
+knee = [("ff0_Tinf", "baseline"), ("ff1_Tinf", "ZOH\n(T=inf)"), ("ff1_T0.27", "T=0.27"), ("ff1_T0.05", "T=0.05")]
+vals = [1000 * med_com([r for r in ff if r["cond"] == c]) for c, _ in knee]
+bars = ax2.bar(range(len(knee)), vals, color=["#444444", "#ff7f0e", "#d62728", "#9467bd"])
+ax2.set_xticks(range(len(knee))); ax2.set_xticklabels([l for _, l in knee], fontsize=9)
+ax2.set_ylabel("median peak CoM dev [mm]"); ax2.set_title("(b) Horizon-decay knee (oracle, 50 N)")
+ax2.grid(alpha=0.3, axis="y")
+fig.tight_layout(); fig.savefig(os.path.join(OUT, "fig_b2_sagittal.pdf")); plt.close(fig)
+
+# ------------------------------------------------------------------------- Figure 2: B2 directional
+d = load("b2_dir_sweep.csv")
+fig, axes = plt.subplots(1, 2, figsize=(9.5, 3.6), sharey=True)
+for ax, dname in zip(axes, ["diagonal", "lateral"]):
+    dmags = sorted({int(r["mag_N"]) for r in d if r["dir"] == dname})
+    for ffmode, lab, col, mk in [("0", "baseline", "#444444", "o"), ("2", "observer FF", "#d62728", "^")]:
+        rate, lo, hi = [], [], []
+        for m in dmags:
+            rows = [r for r in d if r["dir"] == dname and int(r["mag_N"]) == m and r["ff_mode"] == ffmode]
+            p, l, h = fall_rate(rows)
+            rate.append(100 * p); lo.append(100 * (p - l)); hi.append(100 * (h - p))
+        ax.errorbar(dmags, rate, yerr=[lo, hi], label=lab, color=col, marker=mk, capsize=3, lw=1.8, ms=6)
+    ax.set_xlabel("|push| [N]"); ax.set_title(f"{dname}"); ax.set_ylim(-5, 105); ax.grid(alpha=0.3)
+    ax.legend(frameon=False, fontsize=9)
+axes[0].set_ylabel("fall rate [%]")
+fig.suptitle("B2 directional generalization (M=10)", y=1.02)
+fig.tight_layout(); fig.savefig(os.path.join(OUT, "fig_b2_directional.pdf"), bbox_inches="tight"); plt.close(fig)
+
+# --------------------------------------------------------------------------------- Table 1: B1 null
+b1 = load("b1_seeds.csv")
+with open(os.path.join(OUT, "tab_b1.tex"), "w") as f:
+    f.write("% B1 Full-vs-SRBD inertia ablation (seed-averaged, M=8). Generated by report_figs.py.\n")
+    f.write("\\begin{tabular}{rlccc}\n\\toprule\n")
+    f.write("push [N] & model & falls/N & CoM dev [m] (median) & DCM dev [m] (median) \\\\\n\\midrule\n")
+    for m in sorted({int(r["push_N"]) for r in b1}):
+        for model in ("full", "srbd"):
+            rows = [r for r in b1 if int(r["push_N"]) == m and r["model"] == model]
+            k = sum(fell(r) for r in rows)
+            f.write(f"{m} & {model.upper()} & {k}/{len(rows)} & {med_com(rows):.4f} & "
+                    f"{statistics.median([float(r['peak_dcm_dev_m']) for r in rows if not fell(r)]):.4f} \\\\\n")
+        f.write("\\addlinespace\n")
+    f.write("\\bottomrule\n\\end{tabular}\n")
+
+# ----------------------------------------------------------------- Table 2: B2 thresholds + reduction
+def reliable_threshold(rows_by_mag):
+    """Highest magnitude with 0 falls (monotonic-ish)."""
+    best = None
+    for m in sorted(rows_by_mag):
+        if sum(fell(r) for r in rows_by_mag[m]) == 0:
+            best = m
+    return best
+
+
+with open(os.path.join(OUT, "tab_b2.tex"), "w") as f:
+    f.write("% B2 observer-FF: reliable in-place recovery thresholds. Generated by report_figs.py.\n")
+    f.write("\\begin{tabular}{llc}\n\\toprule\n")
+    f.write("direction & arm & reliable threshold [N] (0 falls) \\\\\n\\midrule\n")
+    # sagittal from edge sweep
+    for ffmode, lab in [("0", "baseline"), ("1", "oracle FF"), ("2", "observer FF")]:
+        by = defaultdict(list)
+        for r in edge:
+            if r["ff_mode"] == ffmode:
+                by[int(r["fx_N"])].append(r)
+        f.write(f"sagittal & {lab} & {reliable_threshold(by)} \\\\\n")
+    f.write("\\addlinespace\n")
+    for dname in ("diagonal", "lateral"):
+        for ffmode, lab in [("0", "baseline"), ("2", "observer FF")]:
+            by = defaultdict(list)
+            for r in d:
+                if r["dir"] == dname and r["ff_mode"] == ffmode:
+                    by[int(r["mag_N"])].append(r)
+            f.write(f"{dname} & {lab} & {reliable_threshold(by)} \\\\\n")
+        f.write("\\addlinespace\n")
+    f.write("\\bottomrule\n\\end{tabular}\n")
+
+print("wrote figures + tables to", OUT)
+for fn in sorted(os.listdir(OUT)):
+    print("  ", fn)
