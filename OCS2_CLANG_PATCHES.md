@@ -33,3 +33,15 @@ libc++ (macOS) it aliases `steady_clock` (no `to_time_t`). **Fix (portable):**
 ```
 std::chrono::high_resolution_clock::to_time_t(... high_resolution_clock::now())  ->  std::chrono::system_clock::to_time_t(... system_clock::now())
 ```
+
+## 3. `std::result_of` → `std::invoke_result` (C++20) — portable
+`std::result_of` was removed in C++20 (gone on libc++). OCS2 used it in 3 headers;
+replaced with `std::invoke_result` (available since C++17, works in both standards):
+- `ocs2_core/include/ocs2_core/thread_support/ThreadPool.h` (3 spots): `std::result_of<Functor(int)>::type` → `std::invoke_result<Functor, int>::type`
+- `ocs2_core/include/ocs2_core/misc/LinearInterpolation.h` (2 spots) and `.../misc/implementation/LinearInterpolation.h` (2 spots): `std::result_of<AccessFun(const std::vector<Data, Alloc>&, size_t)>::type` → `std::invoke_result<AccessFun, const std::vector<Data, Alloc>&, size_t>::type`
+
+**Why C++20 (not the earlier C++17):** the standalone build was unified to **C++20** so that
+`CentroidalMpcMrtJointController` can include BOTH OCS2 headers and `robot_model` headers
+(which use C++20 `concepts`/`span` via `IDMapBase.h`) in one TU — the closed-loop bridge
+needs both. The controller also uses `std::jthread` (C++20). This patch is what makes OCS2
+C++20-clean. Verified: full OCS2+MPC rebuild at C++20 is clean, G1 solve unchanged (dyn-viol 9.1e-6).

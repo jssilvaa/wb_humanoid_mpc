@@ -31,7 +31,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "humanoid_centroidal_mpc/CentroidalMpcInterface.h"
 
+#ifndef HUMANOID_MPC_NO_ROS2
 #include <ocs2_ros2_interfaces/mrt/DummyObserver.h>
+#else
+namespace ocs2 {
+class DummyObserver;  // RViz visualizer; unused in the standalone (non-ROS2) build. shared_ptr of an
+                      // incomplete type is fine for the member/ctor-param; only the ->update() deref is guarded.
+}  // namespace ocs2
+#endif
 #include <robot_model/ControllerBase.h>
 #include "humanoid_common_mpc/reference_manager/ProceduralMpcMotionManager.h"
 #include "robot_model/RobotDescription.h"

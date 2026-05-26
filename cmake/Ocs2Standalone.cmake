@@ -30,11 +30,13 @@ endforeach()
 # Common OCS2 compile settings (macOS/clang/C++20). Deliberately NOT using
 # ocs2_core/cmake/ocs2_cxx_flags.cmake (forces C++14 + GNU-ld -Wl,--no-as-needed).
 add_library(ocs2_flags INTERFACE)
-# OCS2 is C++14/17 code (uses std::result_of, REMOVED in C++20). Force C++17 on
-# the OCS2 + humanoid-MPC side; the observer/robot_runtime/MuJoCo side stays C++20
-# (they don't include OCS2 headers; C++17<->C++20 static libs link fine).
+# C++20 (unified with the robot_runtime/MuJoCo/observer side). OCS2 originally used
+# std::result_of (removed in C++20 on libc++); patched to std::invoke_result in 3
+# ocs2_core headers (see OCS2_CLANG_PATCHES.md). Unifying at C++20 is REQUIRED for the
+# closed-loop harness: CentroidalMpcMrtJointController includes BOTH OCS2 headers and
+# robot_model headers (which use C++20 concepts/span via IDMapBase.h) in one TU.
 target_compile_options(ocs2_flags INTERFACE
-  -std=gnu++17 -Wno-invalid-partial-specialization
+  -std=gnu++20 -Wno-invalid-partial-specialization
   -include cassert   # OCS2 headers use assert() but rely on a transitive <cassert>
   -O2)               # -O2: OCS2's numerical inner loops are unusably slow at -O0 (LQ approx ~6ms -> sub-ms)
 target_compile_definitions(ocs2_flags INTERFACE BOOST_MPL_LIMIT_LIST_SIZE=30)
@@ -190,8 +192,8 @@ target_link_libraries(ocs2SolveCheck PRIVATE ocs2::sqp ocs2::oc ocs2::core ocs2_
 # macro this build defines; the ament build never does, so it stays byte-identical):
 #   - common: WalkingVelocityCommand.h (msg-conversion fn), GaitScheduleUpdater.h
 #     (vestigial rclcpp include) -- both guarded in-place.
-#   - centroidal: mrt/CentroidalMpcMrtJointController.{h,cpp} EXCLUDED (it bridges to
-#     ocs2_ros2_interfaces + robot_runtime/robot_model; pure runtime, not core MPC).
+#   - centroidal: mrt/CentroidalMpcMrtJointController's only ROS2 dep is the optional
+#     DummyObserver viz, also gated by HUMANOID_MPC_NO_ROS2 (forward-declared there).
 # =============================================================================
 
 # ---- 14) humanoid_common_mpc (shared MPC base) -----------------------------
@@ -205,15 +207,19 @@ target_link_libraries(humanoid_common_mpc PUBLIC
   PkgConfig::pinocchio Eigen3::Eigen ${OCS2_BOOST_LIBS})
 add_library(humanoid::common_mpc ALIAS humanoid_common_mpc)
 
-# ---- 15) humanoid_centroidal_mpc (centroidal MPC; mrt/ excluded) -----------
+# ---- 15) humanoid_centroidal_mpc (centroidal MPC incl. mrt/ runtime bridge) -
+# Full src incl. mrt/CentroidalMpcMrtJointController: it bridges the MPC policy to
+# robot joint torques (inverse dynamics) and is reused by the B1 closed-loop harness.
+# Its only ROS2 dep (DummyObserver viz) is gated by HUMANOID_MPC_NO_ROS2; it also pulls
+# robot::model (RobotState/ControllerBase) -> requires the unified C++20 build (robot_model
+# headers use concepts/span; the controller also uses std::jthread).
 set(HCMPC ${CMAKE_SOURCE_DIR}/humanoid_nmpc/humanoid_centroidal_mpc)
 file(GLOB_RECURSE HCMPC_SRC CONFIGURE_DEPENDS ${HCMPC}/src/*.cpp)
-list(FILTER HCMPC_SRC EXCLUDE REGEX "/mrt/")  # ROS2/robot_runtime runtime bridge
 add_library(humanoid_centroidal_mpc STATIC ${HCMPC_SRC})
 target_include_directories(humanoid_centroidal_mpc PUBLIC ${HCMPC}/include)
 target_compile_definitions(humanoid_centroidal_mpc PUBLIC HUMANOID_MPC_NO_ROS2)
 target_link_libraries(humanoid_centroidal_mpc PUBLIC
-  humanoid::common_mpc
+  humanoid::common_mpc robot::model
   ocs2::core ocs2::oc ocs2::mpc ocs2::ddp ocs2::sqp ocs2::centroidal_model
   ocs2::robotic_tools ocs2::pinocchio_interface ocs2_flags
   PkgConfig::pinocchio Eigen3::Eigen ${OCS2_BOOST_LIBS})

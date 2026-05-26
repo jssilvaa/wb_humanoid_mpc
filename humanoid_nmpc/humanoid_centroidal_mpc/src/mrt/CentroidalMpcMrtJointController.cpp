@@ -189,9 +189,11 @@ void CentroidalMpcMrtJointController::computeJointControlAction(scalar_t time,
       // std::cerr << "MPCtorque!: " << mpcJointTorques[i] << std::endl;
     };
 
+#ifndef HUMANOID_MPC_NO_ROS2
     if (visualizerPtr_ != nullptr) {
       visualizerPtr_->update(currentMpcObservation_, mcpMrtInterface_.getPolicy(), mcpMrtInterface_.getCommand());
     }
+#endif
   }
 
   else {
