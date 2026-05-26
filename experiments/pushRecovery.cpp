@@ -14,8 +14,8 @@
 // Default push = minor_sagittal (+x 100 N / 0.1 s) from report section 07. For the B1
 // ablation it is run SUB-THRESHOLD (30-70 N), where the baseline recovers in place. argv:
 //   pushRecovery [sim_sec=6] [fx=100] [fy=0] [t_push=2.0] [dur=0.1] [taskFile] [csvPath] [ff_mode=0] [ff_T=inf]
-// ff_mode: 0 = off (baseline), 1 = oracle external-wrench feedforward (B2.0); ff_T = horizon decay
-// time T [s] for the feedforward (inf = ZOH). (real wall-clock seconds; the sim thread runs in real time.)
+// ff_mode: 0 = off (baseline), 1 = oracle FF (B2.0), 2 = observer FF (B2.1, cascaded centroidal-
+// momentum observer); ff_T = horizon decay time T [s] (inf = ZOH). (real wall-clock seconds.)
 
 #include <algorithm>
 #include <chrono>
@@ -36,6 +36,7 @@
 #include <humanoid_centroidal_mpc/mrt/CentroidalMpcMrtJointController.h>
 #include <humanoid_centroidal_mpc/synchronized_module/ExternalWrenchFeedforward.h>
 #include <humanoid_common_mpc/reference_manager/ProceduralMpcMotionManager.h>
+#include <humanoid_disturbance_rejection/CentroidalMomentumObserver.h>
 #include <mujoco/mujoco.h>
 #include <mujoco_sim_interface/MujocoSimInterface.h>
 #include <robot_model/RobotDescription.h>
@@ -43,6 +44,7 @@
 
 using namespace ocs2;
 using namespace ocs2::humanoid;
+namespace adr = ::humanoid::adr;  // cascaded centroidal-momentum observer (B2.1)
 
 int main(int argc, char** argv) {
   const double sim_T = (argc > 1) ? std::stod(argv[1]) : 6.0;    // real (wall-clock) seconds
@@ -54,7 +56,7 @@ int main(int argc, char** argv) {
   // .../task_srbd.info for the SRBD arm (distinct robotName -> distinct codegen cache).
   const std::string taskFile = (argc > 6 && std::string(argv[6]).size()) ? argv[6] : G1_TASK_FILE;
   const std::string csvPath = (argc > 7 && std::string(argv[7]).size()) ? argv[7] : "";  // empty -> no CSV
-  const int ff_mode = (argc > 8) ? std::stoi(argv[8]) : 0;  // external-wrench feedforward: 0 = off (baseline), 1 = oracle
+  const int ff_mode = (argc > 8) ? std::stoi(argv[8]) : 0;  // feedforward: 0 = off (baseline), 1 = oracle, 2 = observer
   const double ff_T = (argc > 9) ? std::stod(argv[9]) : std::numeric_limits<double>::infinity();  // horizon decay T [s]; inf = ZOH
   const std::string urdfFile = G1_URDF_FILE;
   const std::string referenceFile = G1_REFERENCE_FILE;
@@ -90,7 +92,8 @@ int main(int argc, char** argv) {
   if (ff_mode > 0) {
     ffModule = std::make_shared<ExternalWrenchFeedforward>(interface.getExternalWrenchFeedforwardPtr(), ff_T, /*trust=*/1.0);
     mpc.getSolverPtr()->addSynchronizedModule(ffModule);
-    std::cout << "external-wrench feedforward ENABLED (ff_mode=" << ff_mode << ", oracle, horizon decay T=" << ff_T << " s)\n";
+    std::cout << "external-wrench feedforward ENABLED (ff_mode=" << ff_mode << (ff_mode == 2 ? ", observer" : ", oracle")
+              << ", horizon decay T=" << ff_T << " s)\n";
   }
 
   // 3. Sim initial state = MPC nominal initial state.
@@ -157,6 +160,18 @@ int main(int argc, char** argv) {
            "h_lin_x,h_lin_y,h_lin_z,h_ang_x,h_ang_y,h_ang_z,base_x,base_y,base_z,pushing\n";
     std::cout << "  logging CoM/DCM/momentum CSV -> " << csvPath << "\n";
   }
+
+  // Observer source (ff_mode 2): cascaded centroidal-momentum observer estimating the external
+  // wrench from measured momentum h = [m*v_com; angmom] and W_known = gravity + ground reaction.
+  // dt is the measured wall-clock control period (the loop is variable-rate).
+  adr::CentroidalObserverConfig obsCfg;
+  obsCfg.order = 3;
+  obsCfg.dt = 0.002;  // nominal fallback; overridden per step with the measured dt
+  obsCfg.profile = adr::ObserverGainProfile::ShortPulse;  // alpha = 70, tau ~ 14 ms (centroidal default)
+  adr::CentroidalMomentumObserver observer(obsCfg);
+  const vector3_t gravityVec(0.0, 0.0, -g);
+  double obsPrevT = -1.0;
+
   const auto loopStart = std::chrono::steady_clock::now();
   const auto loopEnd = loopStart + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(sim_T));
   auto nextLog = loopStart;
@@ -200,15 +215,29 @@ int main(int argc, char** argv) {
       std::cout << "  push OFF @t=" << t << " s\n" << std::flush;
     }
 
-    // Oracle external-wrench feedforward (ff_mode 1): feed the TRUE wrench about the CoM during
-    // the push window (perfect estimate + timing), zero otherwise. com is the current CoM.
-    if (ffModule) {
+    // External-wrench feedforward source. ff_mode 1 = oracle (true wrench about CoM during the push
+    // window, perfect estimate + timing); ff_mode 2 = observer (estimate from measured momentum +
+    // ground reaction, run every step). com/vcom/angmom are this step's measured centroidal state.
+    if (ffModule && ff_mode == 1) {
       vector_t wFF = vector_t::Zero(6);
       if (pushApplied && !pushCleared) {
         const vector3_t xApp = robotInterface.getBodyComPosition("torso_link");
         wFF.head<3>() = pushForce;
         wFF.tail<3>() = (xApp - com).cross(pushForce);
       }
+      ffModule->setWrench(wFF);
+    } else if (ffModule && ff_mode == 2) {
+      adr::vector6_t hMeas;
+      hMeas.head<3>() = totalMass * vcom;
+      hMeas.tail<3>() = angmom;
+      adr::vector6_t wKnown;
+      wKnown.head<3>() = totalMass * gravityVec;
+      wKnown.tail<3>().setZero();
+      wKnown += robotInterface.getGroundReactionWrench(com);  // + ground reaction [f; tau] about CoM
+      const double obsDt = (obsPrevT >= 0.0) ? (t - obsPrevT) : 0.002;
+      obsPrevT = t;
+      const adr::vector6_t& wHat = observer.update(hMeas, wKnown, obsDt);
+      vector_t wFF = wHat;  // fixed (6) -> dynamic vector_t for the feedforward buffer
       ffModule->setWrench(wFF);
     }
 

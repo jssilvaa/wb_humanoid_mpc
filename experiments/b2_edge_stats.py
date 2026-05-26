@@ -43,7 +43,7 @@ def ms(xs):
     return (statistics.mean(xs), statistics.stdev(xs) if len(xs) > 1 else 0.0)
 
 
-arms = [("0", "baseline"), ("1", "FF T=0.27")]
+arms = [("0", "baseline"), ("1", "oracle FF"), ("2", "observer FF")]
 mags = sorted({k[0] for k in cells})
 
 hdr = (f"{'push_N':>7} {'arm':<11}{'n':>3}{'fall':>5}{'fall_rate (95% CI)':>22}   "

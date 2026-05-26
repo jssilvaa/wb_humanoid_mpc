@@ -61,9 +61,11 @@ class CentroidalMomentumObserver {
   explicit CentroidalMomentumObserver(const CentroidalObserverConfig& config);
 
   // Advance one timestep and return the updated estimate W_hat = [f_ext ; tau_ext].
-  //   h       : measured centroidal momentum   [p_G ; k_G] = [linear ; angular]
-  //   W_known : gravity + measured contact wrenches about the CoM, same ordering
-  const vector6_t& update(const vector6_t& h, const vector6_t& W_known);
+  //   h          : measured centroidal momentum   [p_G ; k_G] = [linear ; angular]
+  //   W_known    : gravity + measured contact wrenches about the CoM, same ordering
+  //   dtOverride : if > 0, use this timestep for this step's forward-Euler integration (for
+  //                variable-rate control loops); otherwise the configured cfg.dt is used.
+  const vector6_t& update(const vector6_t& h, const vector6_t& W_known, double dtOverride = -1.0);
 
   const vector6_t& wHat() const { return wHat_; }
   void reset();

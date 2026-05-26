@@ -469,4 +469,29 @@ vector3_t MujocoSimInterface::getBodyComPosition(const std::string& bodyName) {
   return vector3_t(mujocoData_->xipos[3 * bodyId], mujocoData_->xipos[3 * bodyId + 1], mujocoData_->xipos[3 * bodyId + 2]);
 }
 
+vector6_t MujocoSimInterface::getGroundReactionWrench(const vector3_t& aboutPoint, const std::string& floorGeomName) {
+  const int floorId = mj_name2id(mujocoModel_, mjOBJ_GEOM, floorGeomName.c_str());
+  if (floorId < 0) {
+    throw std::runtime_error("MujocoSimInterface::getGroundReactionWrench: unknown floor geom '" + floorGeomName + "'");
+  }
+  std::lock_guard<std::mutex> lock(mujocoMutex_);
+  vector6_t wrench = vector6_t::Zero();
+  for (int c = 0; c < mujocoData_->ncon; ++c) {
+    const mjContact& con = mujocoData_->contact[c];
+    const bool floorA = (con.geom[0] == floorId);
+    const bool floorB = (con.geom[1] == floorId);
+    if (!floorA && !floorB) continue;  // only floor contacts (ground reaction); skip self-collisions
+    mjtNum f6[6];
+    mj_contactForce(mujocoModel_, mujocoData_, c, f6);
+    const Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::RowMajor>> R(con.frame);  // contact->world rows
+    const double sign = floorA ? 1.0 : -1.0;  // force on the robot (the non-floor geom)
+    const vector3_t f = sign * (R.transpose() * Eigen::Map<const vector3_t>(f6));
+    const vector3_t tau = sign * (R.transpose() * Eigen::Map<const vector3_t>(f6 + 3));
+    const vector3_t x(con.pos[0], con.pos[1], con.pos[2]);
+    wrench.head<3>() += f;
+    wrench.tail<3>() += tau + (x - aboutPoint).cross(f);
+  }
+  return wrench;
+}
+
 }  // namespace robot::mujoco_sim_interface

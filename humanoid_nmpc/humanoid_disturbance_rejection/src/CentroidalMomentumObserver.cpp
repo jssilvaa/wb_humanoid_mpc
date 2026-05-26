@@ -54,8 +54,8 @@ void CentroidalMomentumObserver::reset() {
   wHat_.setZero();
 }
 
-const vector6_t& CentroidalMomentumObserver::update(const vector6_t& h, const vector6_t& W_known) {
-  const double dt = cfg_.dt;
+const vector6_t& CentroidalMomentumObserver::update(const vector6_t& h, const vector6_t& W_known, double dtOverride) {
+  const double dt = (dtOverride > 0.0) ? dtOverride : cfg_.dt;
 
   // 1) predicted momentum rate:  h_hat_dot = W_known + W_hat
   const vector6_t hHatDot = W_known + wHat_;

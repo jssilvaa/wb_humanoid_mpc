@@ -114,6 +114,14 @@ class MujocoSimInterface : public robot::model::RobotHWInterfaceBase {
    */
   vector3_t getBodyComPosition(const std::string& bodyName);
 
+  /**
+   * Net ground-reaction wrench on the robot about `aboutPoint` (world frame), ordered [f; tau] =
+   * [linear; angular], summed over all contacts involving the named floor geom. This is the "known"
+   * external wrench (besides gravity) for the centroidal-momentum observer's W_known (ADR / B2.1).
+   * Thread-safe. Throws if the floor geom is unknown. Unused by the ROS 2 build.
+   */
+  vector6_t getGroundReactionWrench(const vector3_t& aboutPoint, const std::string& floorGeomName = "floor");
+
  private:
   void setupJointIndexMaps();
 

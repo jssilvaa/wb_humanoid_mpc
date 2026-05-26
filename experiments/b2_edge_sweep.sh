@@ -12,7 +12,7 @@ BIN="$ROOT/build_standalone/bin/pushRecovery"
 OUT="$ROOT/experiments/results/b2_edge_sweep.csv"
 M="${1:-12}"
 MAGS=(70 80 90 100 110)
-SPECS=("0 inf" "1 0.27")   # baseline vs oracle FF at the knee T
+SPECS=("0 inf" "1 0.27" "2 0.27")   # baseline, oracle FF, observer FF (at the knee T=0.27)
 
 cd "$ROOT/build_standalone"   # codegen cache path is CWD-relative
 echo "cond,ff_mode,T,fx_N,run,peak_com_dev_m,peak_dcm_dev_m,min_base_z_m,result" > "$OUT"

@@ -259,7 +259,7 @@ set_target_properties(standingClosedLoop PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${C
 # Same wiring as standingClosedLoop + MujocoSimInterface::setExternalWrench push.
 add_executable(pushRecovery ${CMAKE_SOURCE_DIR}/experiments/pushRecovery.cpp)
 target_link_libraries(pushRecovery PRIVATE
-  humanoid::centroidal_mpc humanoid::common_mpc robot::mujoco_sim_interface ocs2::sqp ocs2_flags)
+  humanoid::centroidal_mpc humanoid::common_mpc humanoid::adr robot::mujoco_sim_interface ocs2::sqp ocs2_flags)
 target_compile_definitions(pushRecovery PRIVATE
   G1_TASK_FILE="${G1CFG}/mpc/task.info"
   G1_REFERENCE_FILE="${G1CFG}/command/reference.info"
