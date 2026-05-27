@@ -162,7 +162,7 @@ int main(int argc, char** argv) {
     csv.precision(9);
     csv << "t,pushing,base_z,"
            "mj_com_x,mj_com_y,mj_com_z,mj_cp_x,mj_cp_y,"        // MuJoCo ground truth
-           "md_com_x,md_com_y,md_com_z,md_cp_x,md_cp_y,md_omega,"  // module (from MPC init state)
+           "md_com_x,md_com_y,md_com_z,md_cp_x,md_cp_y,md_omega,md_vx,md_vy,md_rhacv_x,md_rhacv_y,"  // module + raw/smoothed CoM vel
            "md_footL_x,md_footL_y,md_footR_x,md_footR_y,"       // module support polygon
            "md_outside,md_fsm,md_steps\n";                       // FSM: CP outside support / state / steps
     std::cout << "  logging CP CSV -> " << csvPath << "\n";
@@ -221,7 +221,8 @@ int main(int argc, char** argv) {
     if (csv.is_open()) {
       csv << t << ',' << (pushApplied && !pushCleared ? 1 : 0) << ',' << base.z() << ',' << com.x() << ',' << com.y() << ','
           << com.z() << ',' << mj_cp_x << ',' << mj_cp_y << ',' << cs.com.x() << ',' << cs.com.y() << ',' << cs.com.z() << ','
-          << cs.capturePoint.x() << ',' << cs.capturePoint.y() << ',' << cs.omega << ',' << cs.footL.x() << ',' << cs.footL.y()
+          << cs.capturePoint.x() << ',' << cs.capturePoint.y() << ',' << cs.omega << ',' << cs.comVel.x() << ',' << cs.comVel.y()
+          << ',' << cs.rhacv.x() << ',' << cs.rhacv.y() << ',' << cs.footL.x() << ',' << cs.footL.y()
           << ',' << cs.footR.x() << ',' << cs.footR.y() << ',' << (cs.outsideSupport ? 1 : 0) << ',' << cs.fsmState << ','
           << cs.stepCount << '\n';
     }

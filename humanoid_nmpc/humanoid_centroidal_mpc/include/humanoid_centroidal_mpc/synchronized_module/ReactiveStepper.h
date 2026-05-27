@@ -31,8 +31,10 @@
 #include <pinocchio/fwd.hpp>  // must precede any other pinocchio header
 
 #include <cmath>
+#include <deque>
 #include <memory>
 #include <mutex>
+#include <utility>
 
 #include <ocs2_core/Types.h>
 #include <ocs2_oc/synchronized_module/SolverSynchronizedModule.h>
@@ -59,6 +61,7 @@ class ReactiveStepper : public SolverSynchronizedModule {
   struct CaptureState {
     vector3_t com = vector3_t::Zero();
     vector2_t comVel = vector2_t::Zero();      // CoM horizontal velocity (= normalized linear momentum)
+    vector2_t rhacv = vector2_t::Zero();       // retrospective-horizon avg CoM velocity (FIR-smoothed), per axis
     vector2_t capturePoint = vector2_t::Zero();  // xi = c_xy + cdot_xy / omega
     vector3_t footL = vector3_t::Zero();       // contactNames[0] (LF) frame position
     vector3_t footR = vector3_t::Zero();       // contactNames[1] (RF) frame position
@@ -82,6 +85,8 @@ class ReactiveStepper : public SolverSynchronizedModule {
     scalar_t swingDur = 0.5;
     scalar_t settleVel = 0.15;
     scalar_t relandGap = 0.1;
+    scalar_t rhHorizonX = 0.10;  // RHACV retrospective horizon, sagittal [s] (short)
+    scalar_t rhHorizonY = 0.30;  // RHACV retrospective horizon, lateral  [s] (long -- smooths the rocking)
   };
 
   // stepLeadTime [s]: how far past initTime the inserted gait starts. A small lead keeps the
@@ -127,6 +132,7 @@ class ReactiveStepper : public SolverSynchronizedModule {
                     const vector_t& currentState,
                     const ReferenceManagerInterface& /*referenceManager*/) override {
     CaptureState cs = computeCaptureState(currentState);  // Pinocchio on our own data copy (this thread only)
+    updateRhacv(initTime, cs);  // RHACV (rung 5): FIR-smoothed CoM velocity; logged now, used by the trigger in rung 6
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (autoEnabled_) runStepFsm(initTime, cs);  // capture-point FSM: may stage a step/stance
@@ -161,6 +167,29 @@ class ReactiveStepper : public SolverSynchronizedModule {
     cs.footR = data.oMf[frameIdR_].translation();
     cs.valid = true;
     return cs;
+  }
+
+  // Retrospective-Horizon Average CoM Velocity (paper Eq. 40): a per-axis boxcar FIR on the CoM
+  // velocity over a time window -- short horizon in x, long in y, so the lateral rocking (which would
+  // otherwise spuriously trip the trigger) averages out while sustained drift survives. Time-windowed
+  // (robust to the jittery solve rate). Single-threaded (preSolverRun / MPC thread) -> no lock. Sets cs.rhacv.
+  void updateRhacv(scalar_t time, CaptureState& cs) {
+    velHistory_.push_back({time, cs.comVel});
+    const scalar_t maxH = std::max(params_.rhHorizonX, params_.rhHorizonY);
+    while (!velHistory_.empty() && time - velHistory_.front().first > maxH) velHistory_.pop_front();
+    scalar_t sx = 0.0, sy = 0.0;
+    int nx = 0, ny = 0;
+    for (const auto& [t, v] : velHistory_) {
+      if (time - t <= params_.rhHorizonX) {
+        sx += v.x();
+        ++nx;
+      }
+      if (time - t <= params_.rhHorizonY) {
+        sy += v.y();
+        ++ny;
+      }
+    }
+    cs.rhacv = vector2_t(nx ? sx / nx : cs.comVel.x(), ny ? sy / ny : cs.comVel.y());
   }
 
   // Support box (world xy) = bounding box of the two contact feet grown by the foot half-extents and
@@ -236,6 +265,7 @@ class ReactiveStepper : public SolverSynchronizedModule {
   bool gaitUpdated_{false};
   ModeSequenceTemplate pendingGait_{{0.0, 0.5}, {ModeNumber::STANCE}};
   CaptureState captureState_;
+  std::deque<std::pair<scalar_t, vector2_t>> velHistory_;  // (time, CoM velocity) for the RHACV window (MPC thread only)
 
   // Capture-point stepping FSM (auto mode).
   bool autoEnabled_{false};
