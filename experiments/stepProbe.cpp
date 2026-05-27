@@ -247,6 +247,9 @@ int main(int argc, char** argv) {
   std::cout << "  mean |CP_module - CP_mujoco| : " << (cpErrN ? cpErrSum / cpErrN : 0.0) << " m  (" << cpErrN << " samples)\n";
   const bool stoodUp = !fell && min_z > 0.5;
   std::cout << (stoodUp ? "[stepProbe] PASS: robot stayed up\n" : fell ? "[stepProbe] FAIL: robot fell\n" : "[stepProbe] NOTE: left the standing regime\n");
+  // Machine-readable summary for the seed campaign (fall = min base z < 0.5, per report section 07).
+  std::cout << "B3SUMMARY min_z=" << min_z << " steps=" << stepper->getCaptureState().stepCount << " fell=" << (min_z < 0.5 ? 1 : 0)
+            << "\n";
 
   if (csv.is_open()) csv.close();  // flush before _Exit (skips destructors / stream flushing)
   std::cout.flush();
