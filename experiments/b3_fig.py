@@ -9,6 +9,7 @@ stepping (auto), in two panels (sagittal +x, lateral +y), with Wilson 95% CIs. F
 import csv
 import math
 import os
+import sys
 from collections import defaultdict
 
 import matplotlib
@@ -16,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CSV = os.path.join(HERE, "results", "b3_step_sweep.csv")
+CSV = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "results", "b3_step_sweep.csv")
 OUT = os.path.join(HERE, "report")
 os.makedirs(OUT, exist_ok=True)
 

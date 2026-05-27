@@ -87,6 +87,8 @@ class ReactiveStepper : public SolverSynchronizedModule {
     scalar_t relandGap = 0.1;
     scalar_t rhHorizonX = 0.10;  // RHACV retrospective horizon, sagittal [s] (short)
     scalar_t rhHorizonY = 0.30;  // RHACV retrospective horizon, lateral  [s] (long -- smooths the rocking)
+    scalar_t rhacvThreshX = 0.25;  // sagittal RHACV trigger [m/s] (rung-5 data: 50 N->0.10, 100 N->0.44)
+    scalar_t rhacvThreshY = 0.30;  // lateral  RHACV trigger [m/s] (rung-5 data: 150 N recov->0.25, 180 N fall->0.36)
   };
 
   // stepLeadTime [s]: how far past initTime the inserted gait starts. A small lead keeps the
@@ -192,25 +194,34 @@ class ReactiveStepper : public SolverSynchronizedModule {
     cs.rhacv = vector2_t(nx ? sx / nx : cs.comVel.x(), ny ? sy / ny : cs.comVel.y());
   }
 
-  // Support box (world xy) = bounding box of the two contact feet grown by the foot half-extents and
-  // shrunk by margin. Returns whether the CP is outside and, if so, the swing mode for a recovery
-  // step: foot toward the dominant exit edge (CP off +y/left -> swing LEFT foot = RF; off -y/right ->
-  // swing RIGHT = LF); a sagittal exit defaults to a right-foot swing, the free foothold sets fwd/back.
+  // Capture-point + RHACV step decision (rung 6). The support box (world xy) is the bounding box of
+  // the contact feet grown by the foot half-extents and shrunk by margin. CP exiting it is the
+  // predictive (forward-looking) signal; RHACV is the retrospective sustained-drift signal. The two
+  // are combined per axis according to our failure modes (rung 4):
+  //   sagittal (narrow support): CP exits only. An eager "CP OR |RHACV_x|" was tried to also catch the
+  //     ~100 N ambiguous zone, but RHACV_x stays high during/after a forward step and re-triggered a
+  //     multi-step cascade that toppled the robot -- breaking even the solid 120-180 N win; reverted.
+  //   lateral (wide support, was OVER-triggering at ~150 N): CP exits AND |RHACV_y| high  -- conservative,
+  //     so a transient rocking spike that merely nicks the wide support does not fire an unneeded step.
+  // Returns whether to step and, if so, the swing mode (lateral -> foot toward the fall; sagittal ->
+  // right-foot default, the free foothold places the actual landing).
   bool decideStep(const CaptureState& cs, size_t& swingModeOut) const {
     const scalar_t xMin = std::min(cs.footL.x(), cs.footR.x()) - params_.xBack + params_.margin;
     const scalar_t xMax = std::max(cs.footL.x(), cs.footR.x()) + params_.xFront - params_.margin;
     const scalar_t yMin = std::min(cs.footL.y(), cs.footR.y()) - params_.yHalf + params_.margin;
     const scalar_t yMax = std::max(cs.footL.y(), cs.footR.y()) + params_.yHalf - params_.margin;
     const scalar_t cx = cs.capturePoint.x(), cy = cs.capturePoint.y();
-    const scalar_t exFwd = cx - xMax, exBack = xMin - cx, exLeft = cy - yMax, exRight = yMin - cy;
-    const scalar_t maxEx = std::max(std::max(exFwd, exBack), std::max(exLeft, exRight));
-    if (maxEx <= 0.0) return false;  // CP inside the (shrunk) support box
-    if (maxEx == exLeft) {
-      swingModeOut = ModeNumber::RF;
-    } else if (maxEx == exRight) {
-      swingModeOut = ModeNumber::LF;
+    const bool cpSagittal = (cx > xMax) || (cx < xMin);
+    const bool cpLateral = (cy > yMax) || (cy < yMin);
+
+    const bool sagTrig = cpSagittal;  // CP-only (eager OR(RHACV_x) cascaded into over-stepping; see note above)
+    const bool latTrig = cpLateral && std::abs(cs.rhacv.y()) > params_.rhacvThreshY;            // AND (conservative)
+    if (!sagTrig && !latTrig) return false;
+
+    if (latTrig) {
+      swingModeOut = (cy > 0.0) ? ModeNumber::RF : ModeNumber::LF;  // CP off +y -> swing LEFT (RF); off -y -> RIGHT (LF)
     } else {
-      swingModeOut = ModeNumber::LF;  // sagittal exit
+      swingModeOut = ModeNumber::LF;  // sagittal-only trigger -> right-foot swing
     }
     return true;
   }
@@ -225,7 +236,7 @@ class ReactiveStepper : public SolverSynchronizedModule {
     size_t swingMode = ModeNumber::LF;
     const bool outside = decideStep(cs, swingMode);
     cs.outsideSupport = outside;
-    const bool settled = cs.comVel.norm() < params_.settleVel;
+    const bool settled = cs.comVel.norm() < params_.settleVel;  // instantaneous CoM vel (RHACV-S2B added sagittal timing variance, no benefit)
 
     if (stepPhase_ == StepPhase::Balance) {
       if (outside) {
