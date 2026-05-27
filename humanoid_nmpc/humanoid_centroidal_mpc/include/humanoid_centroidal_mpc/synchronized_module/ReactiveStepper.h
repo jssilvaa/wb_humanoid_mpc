@@ -63,7 +63,25 @@ class ReactiveStepper : public SolverSynchronizedModule {
     vector3_t footL = vector3_t::Zero();       // contactNames[0] (LF) frame position
     vector3_t footR = vector3_t::Zero();       // contactNames[1] (RF) frame position
     scalar_t omega = 0.0;                      // sqrt(g / c_z)
+    bool outsideSupport = false;               // capture point outside the (margin-shrunk) support box
+    int fsmState = 0;                          // 0 = balance, 1 = stepping (auto mode)
+    int stepCount = 0;                         // number of steps staged so far (auto mode)
     bool valid = false;
+  };
+
+  // Foot half-extents [m] (G1: x_front 0.12, x_back 0.05, y 0.03 per report section 07) + the
+  // capture-point trigger knobs. The support box is the bounding box of the contact feet grown by
+  // these extents and shrunk by margin; CP outside it triggers a step. settleVel is the CoM-speed
+  // below which "stepping -> balance" may complete; relandGap delays re-evaluation until a staged
+  // step has landed (swingDur + relandGap after staging).
+  struct StepParams {
+    scalar_t xFront = 0.12;
+    scalar_t xBack = 0.05;
+    scalar_t yHalf = 0.03;
+    scalar_t margin = 0.02;
+    scalar_t swingDur = 0.5;
+    scalar_t settleVel = 0.15;
+    scalar_t relandGap = 0.1;
   };
 
   // stepLeadTime [s]: how far past initTime the inserted gait starts. A small lead keeps the
@@ -89,6 +107,15 @@ class ReactiveStepper : public SolverSynchronizedModule {
     gaitUpdated_ = true;
   }
 
+  // Enable the capture-point stepping FSM (rung 3). Without this the module only computes the CP and
+  // applies manually-staged gaits (setDesiredGait, used by the rung-1 scripted probe).
+  void enableAutoStepping() { enableAutoStepping(StepParams{}); }
+  void enableAutoStepping(const StepParams& params) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    params_ = params;
+    autoEnabled_ = true;
+  }
+
   // Latest capture point + support geometry (thread-safe copy). Computed each preSolverRun.
   CaptureState getCaptureState() {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -99,9 +126,10 @@ class ReactiveStepper : public SolverSynchronizedModule {
                     scalar_t finalTime,
                     const vector_t& currentState,
                     const ReferenceManagerInterface& /*referenceManager*/) override {
-    const CaptureState cs = computeCaptureState(currentState);  // Pinocchio on our own data copy (this thread only)
+    CaptureState cs = computeCaptureState(currentState);  // Pinocchio on our own data copy (this thread only)
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (autoEnabled_) runStepFsm(initTime, cs);  // capture-point FSM: may stage a step/stance
     captureState_ = cs;
     if (gaitUpdated_) {
       // Tile from the prompt start out past the reference manager's read window (it reads
@@ -135,6 +163,67 @@ class ReactiveStepper : public SolverSynchronizedModule {
     return cs;
   }
 
+  // Support box (world xy) = bounding box of the two contact feet grown by the foot half-extents and
+  // shrunk by margin. Returns whether the CP is outside and, if so, the swing mode for a recovery
+  // step: foot toward the dominant exit edge (CP off +y/left -> swing LEFT foot = RF; off -y/right ->
+  // swing RIGHT = LF); a sagittal exit defaults to a right-foot swing, the free foothold sets fwd/back.
+  bool decideStep(const CaptureState& cs, size_t& swingModeOut) const {
+    const scalar_t xMin = std::min(cs.footL.x(), cs.footR.x()) - params_.xBack + params_.margin;
+    const scalar_t xMax = std::max(cs.footL.x(), cs.footR.x()) + params_.xFront - params_.margin;
+    const scalar_t yMin = std::min(cs.footL.y(), cs.footR.y()) - params_.yHalf + params_.margin;
+    const scalar_t yMax = std::max(cs.footL.y(), cs.footR.y()) + params_.yHalf - params_.margin;
+    const scalar_t cx = cs.capturePoint.x(), cy = cs.capturePoint.y();
+    const scalar_t exFwd = cx - xMax, exBack = xMin - cx, exLeft = cy - yMax, exRight = yMin - cy;
+    const scalar_t maxEx = std::max(std::max(exFwd, exBack), std::max(exLeft, exRight));
+    if (maxEx <= 0.0) return false;  // CP inside the (shrunk) support box
+    if (maxEx == exLeft) {
+      swingModeOut = ModeNumber::RF;
+    } else if (maxEx == exRight) {
+      swingModeOut = ModeNumber::LF;
+    } else {
+      swingModeOut = ModeNumber::LF;  // sagittal exit
+    }
+    return true;
+  }
+
+  ModeSequenceTemplate buildStepGait(size_t swingMode) const {
+    return ModeSequenceTemplate({0.0, params_.swingDur, params_.swingDur + 100.0}, {swingMode, ModeNumber::STANCE});
+  }
+
+  // Capture-point FSM (call under lock): stage a step on balance->stepping, another step if the CP
+  // is still outside after the previous one lands (adaptive multi-step), or stance once recovered.
+  void runStepFsm(scalar_t initTime, CaptureState& cs) {
+    size_t swingMode = ModeNumber::LF;
+    const bool outside = decideStep(cs, swingMode);
+    cs.outsideSupport = outside;
+    const bool settled = cs.comVel.norm() < params_.settleVel;
+
+    if (stepPhase_ == StepPhase::Balance) {
+      if (outside) {
+        pendingGait_ = buildStepGait(swingMode);
+        gaitUpdated_ = true;
+        stepPhase_ = StepPhase::Stepping;
+        lastStageTime_ = initTime;
+        ++stepCount_;
+      }
+    } else if (initTime > lastStageTime_ + params_.swingDur + params_.relandGap) {  // step has landed: re-evaluate
+      if (outside) {
+        pendingGait_ = buildStepGait(swingMode);  // still off support -> another step toward the current CP
+        gaitUpdated_ = true;
+        lastStageTime_ = initTime;
+        ++stepCount_;
+      } else if (settled) {
+        pendingGait_ = ModeSequenceTemplate({0.0, 0.5}, {ModeNumber::STANCE});  // recovered -> hold stance
+        gaitUpdated_ = true;
+        stepPhase_ = StepPhase::Balance;
+      }
+    }
+    cs.fsmState = (stepPhase_ == StepPhase::Stepping) ? 1 : 0;
+    cs.stepCount = stepCount_;
+  }
+
+  enum class StepPhase { Balance, Stepping };
+
   std::shared_ptr<GaitSchedule> gaitSchedulePtr_;
   PinocchioInterface pinocchioInterface_;  // mutable copy (owns its own data for the FK above)
   std::unique_ptr<MpcRobotModelBase<scalar_t>> mpcRobotModelPtr_;
@@ -147,6 +236,13 @@ class ReactiveStepper : public SolverSynchronizedModule {
   bool gaitUpdated_{false};
   ModeSequenceTemplate pendingGait_{{0.0, 0.5}, {ModeNumber::STANCE}};
   CaptureState captureState_;
+
+  // Capture-point stepping FSM (auto mode).
+  bool autoEnabled_{false};
+  StepParams params_;
+  StepPhase stepPhase_{StepPhase::Balance};
+  scalar_t lastStageTime_{-1e9};
+  int stepCount_{0};
 };
 
 }  // namespace ocs2::humanoid

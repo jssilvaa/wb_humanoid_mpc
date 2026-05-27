@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
   const double swingDur = 0.5;  // swing-phase duration of the scripted step [s]
 
   const bool scripted = (stepTrigger == "scripted");
-  if (stepTrigger == "auto") std::cout << "[stepProbe] stepTrigger=auto not implemented yet (rung 3); running with no stepping.\n";
+  const bool autoTrig = (stepTrigger == "auto");
   // Right foot swings -> left foot is the stance/contact foot -> mode LF (see MotionPhaseDefinition).
   const bool rightSwings = (footArg != "L" && footArg != "l");
   const size_t swingMode = rightSwings ? ModeNumber::LF : ModeNumber::RF;
@@ -95,6 +95,10 @@ int main(int argc, char** argv) {
   auto stepper = std::make_shared<ReactiveStepper>(interface.getSwitchedModelReferenceManagerPtr()->getGaitSchedule(),
                                                    interface.getPinocchioInterface(), interface.getMpcRobotModel(),
                                                    interface.modelSettings());
+  if (autoTrig) {
+    stepper->enableAutoStepping();
+    std::cout << "  auto capture-point stepping ENABLED\n";
+  }
 
   mpc.getSolverPtr()->setReferenceManager(interface.getReferenceManagerPtr());
   mpc.getSolverPtr()->addSynchronizedModule(motionManager);
@@ -159,7 +163,8 @@ int main(int argc, char** argv) {
     csv << "t,pushing,base_z,"
            "mj_com_x,mj_com_y,mj_com_z,mj_cp_x,mj_cp_y,"        // MuJoCo ground truth
            "md_com_x,md_com_y,md_com_z,md_cp_x,md_cp_y,md_omega,"  // module (from MPC init state)
-           "md_footL_x,md_footL_y,md_footR_x,md_footR_y\n";     // module support polygon
+           "md_footL_x,md_footL_y,md_footR_x,md_footR_y,"       // module support polygon
+           "md_outside,md_fsm,md_steps\n";                       // FSM: CP outside support / state / steps
     std::cout << "  logging CP CSV -> " << csvPath << "\n";
   }
 
@@ -217,7 +222,8 @@ int main(int argc, char** argv) {
       csv << t << ',' << (pushApplied && !pushCleared ? 1 : 0) << ',' << base.z() << ',' << com.x() << ',' << com.y() << ','
           << com.z() << ',' << mj_cp_x << ',' << mj_cp_y << ',' << cs.com.x() << ',' << cs.com.y() << ',' << cs.com.z() << ','
           << cs.capturePoint.x() << ',' << cs.capturePoint.y() << ',' << cs.omega << ',' << cs.footL.x() << ',' << cs.footL.y()
-          << ',' << cs.footR.x() << ',' << cs.footR.y() << '\n';
+          << ',' << cs.footR.x() << ',' << cs.footR.y() << ',' << (cs.outsideSupport ? 1 : 0) << ',' << cs.fsmState << ','
+          << cs.stepCount << '\n';
     }
     if (now >= nextLog) {
       std::cout << "  t=" << t << "  base_z=" << base.z() << "  cp_mj=(" << mj_cp_x << ", " << mj_cp_y << ")  cp_mod=("
@@ -237,6 +243,7 @@ int main(int argc, char** argv) {
   std::cout << "--- result ---\n";
   std::cout << "  control steps : " << iters << " over " << wall << " s wall  -> " << (iters / wall) << " Hz\n";
   std::cout << "  final base z   : " << last_z << " m   min base z = " << min_z << " m\n";
+  std::cout << "  steps staged   : " << stepper->getCaptureState().stepCount << "\n";
   std::cout << "  mean |CP_module - CP_mujoco| : " << (cpErrN ? cpErrSum / cpErrN : 0.0) << " m  (" << cpErrN << " samples)\n";
   const bool stoodUp = !fell && min_z > 0.5;
   std::cout << (stoodUp ? "[stepProbe] PASS: robot stayed up\n" : fell ? "[stepProbe] FAIL: robot fell\n" : "[stepProbe] NOTE: left the standing regime\n");
