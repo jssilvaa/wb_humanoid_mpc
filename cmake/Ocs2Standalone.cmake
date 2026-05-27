@@ -281,3 +281,16 @@ target_compile_definitions(stepProbe PRIVATE
   G1_URDF_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.urdf"
   G1_SCENE_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.xml")
 set_target_properties(stepProbe PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ---- B5: integrate observer feedforward (B2) + reactive stepping (B3) in one harness ----
+# stepProbe wiring + the observer/feedforward block from pushRecovery (needs humanoid::adr).
+add_executable(b5Probe ${CMAKE_SOURCE_DIR}/experiments/b5Probe.cpp)
+target_link_libraries(b5Probe PRIVATE
+  humanoid::centroidal_mpc humanoid::common_mpc humanoid::adr robot::mujoco_sim_interface ocs2::sqp ocs2_flags)
+target_compile_definitions(b5Probe PRIVATE
+  G1_TASK_FILE="${G1CFG}/mpc/task.info"
+  G1_REFERENCE_FILE="${G1CFG}/command/reference.info"
+  G1_GAIT_FILE="${CMAKE_SOURCE_DIR}/humanoid_nmpc/humanoid_common_mpc/config/command/gait.info"
+  G1_URDF_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.urdf"
+  G1_SCENE_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.xml")
+set_target_properties(b5Probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
