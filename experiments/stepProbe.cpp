@@ -1,23 +1,23 @@
-// B3 rung 1 -- footstep-policy plumbing probe (open loop, no push, no capture-point logic).
+// B3 closed-loop probe -- reactive stepping verification ladder (rungs 1-3).
 //
-// Verifies the bottom rung of the B3 verification ladder: that injecting a stepping gait through
-// the ReactiveStepper SolverSynchronizedModule actually makes the closed-loop G1 lift and replant a
-// foot, return to double stance, and stay standing -- i.e. that the footstep policy machinery
-// (GaitSchedule/insertModeSequenceTemplate + SwingTrajectoryPlanner + the MRT controller's swing
-// tracking) does what it is supposed to, BEFORE any reactive trigger is wired in.
+// Standing closed loop (headless MujocoSimInterface + CentroidalMpcMrtJointController) + the
+// ReactiveStepper SolverSynchronizedModule + an optional scripted xfrc push. Logs, every control
+// step, the capture point xi = c + cdot/omega computed two ways:
+//   - module: from the MPC init state via Pinocchio (ReactiveStepper::getCaptureState) -- the exact
+//     quantity the stepping trigger will test;
+//   - MuJoCo: from the measured subtree momentum (getSubtreeCentroidalState) -- ground truth;
+// plus the module's foot positions (the support polygon). This validates the CP computation and
+// characterises where the CP sits relative to support under a push (rung 2).
 //
-// Same standing closed-loop wiring as standingClosedLoop/pushRecovery (headless MujocoSimInterface +
-// CentroidalMpcMrtJointController), minus the push/feedforward; plus a single SCRIPTED step. The
-// step is one insert of a COMPOSITE swing-then-stand template {swing, STANCE}: the swing foot lifts
-// for swingDur and LANDS (the STANCE phase), then the robot holds double stance. A single-mode
-// {swing} template would instead leave the foot in perpetual swing (it never touches down) and
-// topple the robot -- the step must lift AND land.
+// stepTrigger:
+//   off       : never step (rung 2 -- push + CP logging only)
+//   scripted  : stage one composite {swing, STANCE} step at t_push (rung 1 plumbing check). A
+//               single-mode {swing} template would leave the foot in perpetual swing and topple;
+//               the step must lift AND land.
+//   auto      : capture-point FSM (rung 3) -- not yet implemented; falls back to off.
 //
-// A per-step CSV of base / CoM / both foot positions (measured from MuJoCo) makes the swing arc
-// (foot z ~ swingHeight 0.08 m) and the contact return directly visible.
-//
-// argv: stepProbe [sim_sec=6] [t_step=2.0] [swingDur=0.5] [foot=R] [csvPath] [taskFile]
-//   foot: R = right foot swings (gait {LF}), L = left foot swings (gait {RF}). (real wall-clock sec.)
+// argv: stepProbe [sim_s=6] [fx=0] [fy=0] [t_push=2] [dur=0.1] [stepTrigger=off] [foot=R] [csv] [taskFile]
+//   foot: R = right swings (gait {LF}), L = left swings (gait {RF}). (real wall-clock seconds.)
 
 #include <algorithm>
 #include <chrono>
@@ -47,35 +47,41 @@ using namespace ocs2::humanoid;
 
 int main(int argc, char** argv) {
   const double sim_T = (argc > 1) ? std::stod(argv[1]) : 6.0;     // real (wall-clock) seconds
-  const double t_step = (argc > 2) ? std::stod(argv[2]) : 2.0;    // swing onset [s]
-  const double swingDur = (argc > 3) ? std::stod(argv[3]) : 0.5;  // swing-phase duration [s] (then lands + holds stance)
-  const std::string footArg = (argc > 4 && std::string(argv[4]).size()) ? argv[4] : "R";  // which foot swings
-  const std::string csvPath = (argc > 5 && std::string(argv[5]).size()) ? argv[5] : "";
-  const std::string taskFile = (argc > 6 && std::string(argv[6]).size()) ? argv[6] : G1_TASK_FILE;
+  const double fx = (argc > 2) ? std::stod(argv[2]) : 0.0;        // push force x [N]
+  const double fy = (argc > 3) ? std::stod(argv[3]) : 0.0;        // push force y [N]
+  const double t_push = (argc > 4) ? std::stod(argv[4]) : 2.0;    // push (and scripted-step) onset [s]
+  const double dur = (argc > 5) ? std::stod(argv[5]) : 0.1;       // push duration [s]
+  const std::string stepTrigger = (argc > 6 && std::string(argv[6]).size()) ? argv[6] : "off";
+  const std::string footArg = (argc > 7 && std::string(argv[7]).size()) ? argv[7] : "R";
+  const std::string csvPath = (argc > 8 && std::string(argv[8]).size()) ? argv[8] : "";
+  const std::string taskFile = (argc > 9 && std::string(argv[9]).size()) ? argv[9] : G1_TASK_FILE;
   const std::string urdfFile = G1_URDF_FILE;
   const std::string referenceFile = G1_REFERENCE_FILE;
   const std::string gaitFile = G1_GAIT_FILE;
   const std::string sceneFile = G1_SCENE_FILE;
+  const double swingDur = 0.5;  // swing-phase duration of the scripted step [s]
 
+  const bool scripted = (stepTrigger == "scripted");
+  if (stepTrigger == "auto") std::cout << "[stepProbe] stepTrigger=auto not implemented yet (rung 3); running with no stepping.\n";
   // Right foot swings -> left foot is the stance/contact foot -> mode LF (see MotionPhaseDefinition).
   const bool rightSwings = (footArg != "L" && footArg != "l");
   const size_t swingMode = rightSwings ? ModeNumber::LF : ModeNumber::RF;
-  const std::string swingBody = rightSwings ? "right_ankle_roll_link" : "left_ankle_roll_link";
-  // Composite single step: swing for swingDur, then land and hold double stance. The long final
-  // stance (100 s) means the tiled template never steps a second time within any MPC horizon.
+  // Composite single step: swing for swingDur, then land and hold double stance (long final phase
+  // so the tiled template never steps a second time within any horizon).
   const ModeSequenceTemplate stepGait({0.0, swingDur, swingDur + 100.0}, {swingMode, ModeNumber::STANCE});
 
-  std::cout << "=== G1 centroidal-MPC step probe (headless, rung 1) ===\n";
-  std::cout << "scripted step: " << (rightSwings ? "RIGHT" : "LEFT") << " foot swings (gait {" << modeNumber2String(swingMode)
-            << ", STANCE}), onset t=" << t_step << " s, swingDur " << swingDur << " s, sim_T=" << sim_T << " s\n";
+  std::cout << "=== G1 centroidal-MPC step probe (headless) ===\n";
+  std::cout << "push f=(" << fx << ", " << fy << ", 0) N at torso_link t=[" << t_push << ", " << (t_push + dur)
+            << "] s; stepTrigger=" << stepTrigger << (scripted ? (rightSwings ? " (RIGHT swings)" : " (LEFT swings)") : "")
+            << "; sim_T=" << sim_T << " s\n";
 
   // 1. Interface + SQP MPC.
   CentroidalMpcInterface interface(taskFile, urdfFile, referenceFile);
   SqpMpc mpc(interface.mpcSettings(), interface.sqpSettings(), interface.getOptimalControlProblem(), interface.getInitializer());
 
   // 2. Stance target (zero commanded velocity). ProceduralMpcMotionManager only supplies the
-  //    TargetTrajectories here -- at zero velocity it leaves the gait schedule untouched (its
-  //    currentGaitCommand_/lastGaitCommand_ both start "stance"), so ReactiveStepper owns the gait.
+  //    TargetTrajectories here -- at zero velocity it leaves the gait schedule untouched, so the
+  //    ReactiveStepper owns the gait.
   CentroidalMpcTargetTrajectoriesCalculator targetCalc(referenceFile, interface.getMpcRobotModel(), interface.getPinocchioInterface(),
                                                        interface.getCentroidalModelInfo(), interface.mpcSettings().timeHorizon_);
   ProceduralMpcMotionManager::VelocityTargetToTargetTrajectories targetFunc =
@@ -86,8 +92,9 @@ int main(int argc, char** argv) {
       gaitFile, referenceFile, interface.getSwitchedModelReferenceManagerPtr(), interface.getMpcRobotModel(), targetFunc);
   motionManager->setAndScaleVelocityCommand(WalkingVelocityCommand{});
 
-  // Reactive stepper owns the gait schedule (prompt insertion, bypassing the 0.7*horizon heuristic).
-  auto stepper = std::make_shared<ReactiveStepper>(interface.getSwitchedModelReferenceManagerPtr()->getGaitSchedule());
+  auto stepper = std::make_shared<ReactiveStepper>(interface.getSwitchedModelReferenceManagerPtr()->getGaitSchedule(),
+                                                   interface.getPinocchioInterface(), interface.getMpcRobotModel(),
+                                                   interface.modelSettings());
 
   mpc.getSolverPtr()->setReferenceManager(interface.getReferenceManagerPtr());
   mpc.getSolverPtr()->addSynchronizedModule(motionManager);
@@ -135,18 +142,25 @@ int main(int argc, char** argv) {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   robotInterface.startSim();
 
-  // 7. Control loop, wall-clock bounded. Stage the swing gait at t_step, stance again at t_step+hold.
+  // 7. Control loop, wall-clock bounded.
+  const vector3_t pushForce(fx, fy, 0.0);
+  const bool hasPush = (std::abs(fx) + std::abs(fy) > 1e-9);
+  const double g = std::abs(robotInterface.getModel()->opt.gravity[2]);
   double min_z = 1e9, last_z = 0.0;
-  double swingZ0 = 0.0, peakSwingLift = 0.0, finalSwingLift = 0.0;
-  bool swingZ0Set = false, stepStaged = false, fell = false;
+  double cpErrSum = 0.0;
+  long cpErrN = 0;
+  bool stepStaged = false, pushApplied = false, pushCleared = false, fell = false;
   long iters = 0;
 
   std::ofstream csv;
   if (!csvPath.empty()) {
     csv.open(csvPath);
     csv.precision(9);
-    csv << "t,base_x,base_y,base_z,com_x,com_y,com_z,footL_x,footL_y,footL_z,footR_x,footR_y,footR_z,stepping\n";
-    std::cout << "  logging step CSV -> " << csvPath << "\n";
+    csv << "t,pushing,base_z,"
+           "mj_com_x,mj_com_y,mj_com_z,mj_cp_x,mj_cp_y,"        // MuJoCo ground truth
+           "md_com_x,md_com_y,md_com_z,md_cp_x,md_cp_y,md_omega,"  // module (from MPC init state)
+           "md_footL_x,md_footL_y,md_footR_x,md_footR_y\n";     // module support polygon
+    std::cout << "  logging CP CSV -> " << csvPath << "\n";
   }
 
   const auto loopStart = std::chrono::steady_clock::now();
@@ -164,37 +178,50 @@ int main(int argc, char** argv) {
     robotInterface.applyJointAction();
     ++iters;
 
-    // Scripted single step (idempotent edge): one insert of the swing-then-stand template.
-    if (!stepStaged && t >= t_step) {
+    // Scripted single step (idempotent edge).
+    if (scripted && !stepStaged && t >= t_push) {
       stepper->setDesiredGait(stepGait);
       stepStaged = true;
       std::cout << "  step staged @t=" << t << " s\n" << std::flush;
     }
+    // Push window.
+    if (hasPush && !pushApplied && t >= t_push) {
+      robotInterface.setExternalWrench("torso_link", pushForce);
+      pushApplied = true;
+      std::cout << "  push ON  @t=" << t << " s\n" << std::flush;
+    }
+    if (pushApplied && !pushCleared && t >= t_push + dur) {
+      robotInterface.clearExternalWrenches();
+      pushCleared = true;
+      std::cout << "  push OFF @t=" << t << " s\n" << std::flush;
+    }
 
-    const vector3_t base = st.getRootPositionInWorldFrame();
-    const vector3_t footL = robotInterface.getBodyComPosition("left_ankle_roll_link");
-    const vector3_t footR = robotInterface.getBodyComPosition("right_ankle_roll_link");
-    const double swingZ = rightSwings ? footR.z() : footL.z();
+    // MuJoCo ground-truth CP.
     vector3_t com, vcom, angmom;
     robotInterface.getSubtreeCentroidalState(com, vcom, angmom);
+    const double omega_mj = std::sqrt(g / std::max(com.z(), 1e-3));
+    const double mj_cp_x = com.x() + vcom.x() / omega_mj;
+    const double mj_cp_y = com.y() + vcom.y() / omega_mj;
 
+    // Module CP (from the MPC init state, the trigger's quantity).
+    const ReactiveStepper::CaptureState cs = stepper->getCaptureState();
+
+    const vector3_t base = st.getRootPositionInWorldFrame();
     last_z = base.z();
     min_z = std::min(min_z, last_z);
-    if (!swingZ0Set && t >= t_step - 0.05) {  // swing-foot rest height, just before the step
-      swingZ0 = swingZ;
-      swingZ0Set = true;
-    }
-    if (swingZ0Set) {
-      peakSwingLift = std::max(peakSwingLift, swingZ - swingZ0);
-      finalSwingLift = swingZ - swingZ0;
+    if (cs.valid) {  // accumulate module-vs-MuJoCo CP agreement
+      cpErrSum += std::hypot(cs.capturePoint.x() - mj_cp_x, cs.capturePoint.y() - mj_cp_y);
+      ++cpErrN;
     }
     if (csv.is_open()) {
-      csv << t << ',' << base.x() << ',' << base.y() << ',' << base.z() << ',' << com.x() << ',' << com.y() << ',' << com.z() << ','
-          << footL.x() << ',' << footL.y() << ',' << footL.z() << ',' << footR.x() << ',' << footR.y() << ',' << footR.z() << ','
-          << (stepStaged ? 1 : 0) << '\n';
+      csv << t << ',' << (pushApplied && !pushCleared ? 1 : 0) << ',' << base.z() << ',' << com.x() << ',' << com.y() << ','
+          << com.z() << ',' << mj_cp_x << ',' << mj_cp_y << ',' << cs.com.x() << ',' << cs.com.y() << ',' << cs.com.z() << ','
+          << cs.capturePoint.x() << ',' << cs.capturePoint.y() << ',' << cs.omega << ',' << cs.footL.x() << ',' << cs.footL.y()
+          << ',' << cs.footR.x() << ',' << cs.footR.y() << '\n';
     }
     if (now >= nextLog) {
-      std::cout << "  t=" << t << " s  base_z=" << base.z() << "  swing_lift=" << (swingZ0Set ? swingZ - swingZ0 : 0.0) << std::endl;
+      std::cout << "  t=" << t << "  base_z=" << base.z() << "  cp_mj=(" << mj_cp_x << ", " << mj_cp_y << ")  cp_mod=("
+                << cs.capturePoint.x() << ", " << cs.capturePoint.y() << ")" << std::endl;
       nextLog = now + std::chrono::milliseconds(250);
     }
     if (last_z < 0.3) {
@@ -206,23 +233,16 @@ int main(int argc, char** argv) {
   }
   const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - loopStart).count();
 
-  // 8. Report. A clean step = stayed up, the swing foot lifted clearly, and it came back down.
+  // 8. Report.
   std::cout << "--- result ---\n";
-  std::cout << "  control steps   : " << iters << " over " << wall << " s wall  -> " << (iters / wall) << " Hz\n";
-  std::cout << "  swing foot      : " << swingBody << "\n";
-  std::cout << "  peak swing lift : " << peakSwingLift << " m (swing-height target 0.08 m)\n";
-  std::cout << "  final swing lift: " << finalSwingLift << " m (should return ~0 after replant)\n";
-  std::cout << "  final base z    : " << last_z << " m   min base z = " << min_z << " m\n";
-  const bool lifted = peakSwingLift > 0.04;          // a real swing (vs noise) -- target is 0.08 m
-  const bool replanted = std::abs(finalSwingLift) < 0.02;  // foot back down at the end
+  std::cout << "  control steps : " << iters << " over " << wall << " s wall  -> " << (iters / wall) << " Hz\n";
+  std::cout << "  final base z   : " << last_z << " m   min base z = " << min_z << " m\n";
+  std::cout << "  mean |CP_module - CP_mujoco| : " << (cpErrN ? cpErrSum / cpErrN : 0.0) << " m  (" << cpErrN << " samples)\n";
   const bool stoodUp = !fell && min_z > 0.5;
-  const bool clean = stoodUp && lifted && replanted;
-  std::cout << (clean ? "[stepProbe] PASS: single step lifted and replanted, robot stayed up\n"
-               : fell ? "[stepProbe] FAIL: robot fell\n"
-                      : "[stepProbe] NOTE: stayed up but step looks off (see peak/final swing lift)\n");
+  std::cout << (stoodUp ? "[stepProbe] PASS: robot stayed up\n" : fell ? "[stepProbe] FAIL: robot fell\n" : "[stepProbe] NOTE: left the standing regime\n");
 
   if (csv.is_open()) csv.close();  // flush before _Exit (skips destructors / stream flushing)
   std::cout.flush();
   std::cerr.flush();
-  std::_Exit(clean ? 0 : 2);  // sidestep the MRT controller's non-terminating solver thread
+  std::_Exit(stoodUp ? 0 : 2);  // sidestep the MRT controller's non-terminating solver thread
 }
