@@ -267,3 +267,17 @@ target_compile_definitions(pushRecovery PRIVATE
   G1_URDF_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.urdf"
   G1_SCENE_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.xml")
 set_target_properties(pushRecovery PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# ---- B3 rung 1: footstep-policy plumbing probe (ReactiveStepper, scripted single step) ----
+# Standing closed loop + a scripted gait injection; verifies the foot lifts/replants and the
+# robot stays up before any capture-point trigger is wired in. No observer (no humanoid::adr).
+add_executable(stepProbe ${CMAKE_SOURCE_DIR}/experiments/stepProbe.cpp)
+target_link_libraries(stepProbe PRIVATE
+  humanoid::centroidal_mpc humanoid::common_mpc robot::mujoco_sim_interface ocs2::sqp ocs2_flags)
+target_compile_definitions(stepProbe PRIVATE
+  G1_TASK_FILE="${G1CFG}/mpc/task.info"
+  G1_REFERENCE_FILE="${G1CFG}/command/reference.info"
+  G1_GAIT_FILE="${CMAKE_SOURCE_DIR}/humanoid_nmpc/humanoid_common_mpc/config/command/gait.info"
+  G1_URDF_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.urdf"
+  G1_SCENE_FILE="${CMAKE_SOURCE_DIR}/robot_models/unitree_g1/g1_description/urdf/g1_29dof.xml")
+set_target_properties(stepProbe PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
