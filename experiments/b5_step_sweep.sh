@@ -42,7 +42,7 @@ run() {  # mag arm(=mode)
 }
 
 for mag in 70 90 100 120 150 180 200; do
-  for arm in off ff step both; do
+  for arm in off ff step both gate hybrid magff; do
     run "$mag" "$arm"
   done
 done

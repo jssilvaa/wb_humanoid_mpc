@@ -41,12 +41,15 @@ def main():
         g[(int(r["mag"]), r["arm"])].append(r)
     mags = sorted({int(r["mag"]) for r in rows})
 
-    # arm: (key, label, colour, marker, linestyle)
+    # arm: (key, label, colour, marker, linestyle).  off and ff are covered by §7.2.1/.2 and are
+    # dropped from the integration figure so the Pareto trade-off across the four feedforward+
+    # stepping variants reads cleanly against the stepping-only baseline.
     arms = [
-        ("off", "baseline (no ADR)", "#888888", "o", "--"),
-        ("ff", "feedforward only", "#1f77b4", "s", "-"),
         ("step", "stepping only", "#d62728", "^", "-"),
-        ("both", "feedforward + stepping", "#2ca02c", "D", "-"),
+        ("both", "feedforward + stepping (continuous)", "#2ca02c", "D", "-"),
+        ("gate", "feedforward + stepping (suppressed during step)", "#9467bd", "v", ":"),
+        ("hybrid", "feedforward + stepping (first-swing only)", "#ff7f0e", "P", "-."),
+        ("magff", "feedforward + stepping (magnitude-gated)", "#111111", "X", "-"),
     ]
     fig, ax = plt.subplots(figsize=(6.2, 4.0))
     for arm, lab, col, mk, ls in arms:

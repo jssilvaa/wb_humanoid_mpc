@@ -10,6 +10,15 @@
 //   ff   : observer feedforward only  -- the B2 arm (stepper passive).
 //   step : reactive stepping only     -- the B3 arm (no feedforward).
 //   both : feedforward + stepping     -- the B5 integration; FF kept ON through swing.
+//   gate : feedforward + stepping, but the FF is GATED OFF while the stepper is active and for a
+//          settle window after -- the remedy for the mid-band multi-step collision seen in 'both'.
+//   hybrid : feedforward + stepping, FF kept ON through the FIRST step's swing then GATED OFF --
+//          preserves the ceiling momentum-bleed (which needs FF during the step) while preventing the
+//          spurious second step (the FF re-trigger that drives the mid-band collision).
+//   magff : magnitude-gated FF. At the first step trigger the observer latches whether this is a large
+//          push (||W_hat|| >= magThresh): large -> ride the FF through the first swing (hybrid, ceiling
+//          synergy); small -> hold the FF off during the step (gate, clean mid-band). The observer
+//          gates its own feedforward, so FF-during-step is deployed only when the push needs it.
 //
 // In ff/both the cascaded centroidal-momentum observer (B2.1) estimates W_hat from the
 // measured centroidal momentum + ground reaction every control step and feeds it to the
@@ -67,12 +76,20 @@ int main(int argc, char** argv) {
   const std::string gaitFile = G1_GAIT_FILE;
   const std::string sceneFile = G1_SCENE_FILE;
 
-  if (mode != "off" && mode != "ff" && mode != "step" && mode != "both") {
-    std::cerr << "[b5Probe] FAIL: mode must be one of {off, ff, step, both}, got '" << mode << "'\n";
+  const bool isMode = (mode == "off" || mode == "ff" || mode == "step" || mode == "both" || mode == "gate" ||
+                       mode == "hybrid" || mode == "magff");
+  if (!isMode) {
+    std::cerr << "[b5Probe] FAIL: mode must be one of {off, ff, step, both, gate, hybrid, magff}, got '" << mode << "'\n";
     return 2;
   }
-  const bool stepOn = (mode == "step" || mode == "both");  // reactive stepping (B3)
-  const bool ffOn = (mode == "ff" || mode == "both");      // observer feedforward (B2)
+  const bool stepOn = (mode != "off" && mode != "ff");  // reactive stepping (B3) -- all but off/ff
+  const bool ffOn = (mode != "off" && mode != "step");  // observer feedforward (B2) -- all but off/step
+  const bool ffGate = (mode == "gate");      // suppress FF whenever the stepper is active (full gate)
+  const bool ffHybrid = (mode == "hybrid");  // FF on through the first step's swing, gated off after
+  const bool ffMagGate = (mode == "magff");  // observer-||W_hat||-gated: hybrid for large pushes, gate for small
+  const double magThresh = 130.0;            // observer ||W_hat|| threshold [N] at the trigger separating
+                                             // mid-band from ceiling (the fast ceiling trigger catches the
+                                             // estimate mid-ramp ~150-167 N, so the split sits below that)
   const bool rightSwings = (footArg != "L" && footArg != "l");
 
   std::cout << "=== G1 centroidal-MPC B5 probe (headless) ===\n";
@@ -177,6 +194,10 @@ int main(int argc, char** argv) {
   const bool hasPush = (std::abs(fx) + std::abs(fy) > 1e-9);
   double min_z = 1e9, last_z = 0.0;
   double whatPeak = 0.0, firstStepT = -1.0;
+  double lastSteppingT = -1e9;  // last time the stepper FSM was active (for the full-gate mode)
+  const double ffSettle = 0.4;  // full gate: keep FF off this long after the stepper returns to balance [s]
+  const double swingDur = 0.5;  // first-step swing duration (matches StepParams::swingDur), for the hybrid gate
+  bool largePush = false, magLatched = false;  // magff: push-magnitude class latched at the first step trigger
   bool pushApplied = false, pushCleared = false, fell = false;
   long iters = 0;
 
@@ -226,9 +247,15 @@ int main(int argc, char** argv) {
     const double mj_cp_x = com.x() + vcom.x() / omega_mj;
     const double mj_cp_y = com.y() + vcom.y() / omega_mj;
 
-    // Observer feedforward source (ff/both): estimate W_hat from measured momentum + ground reaction
-    // every step, then hand it to the feedforward module. The ground reaction is read live, so single
-    // support during a step (swing foot ~ 0) is handled without special-casing.
+    // Module capture state (from the MPC init state -- the trigger's quantity, and the FSM state the
+    // FF gate reads).
+    const ReactiveStepper::CaptureState cs = stepper->getCaptureState();
+    if (firstStepT < 0.0 && cs.stepCount > 0) firstStepT = t;  // first step onset (FF-delay diagnostic)
+    if (cs.fsmState != 0) lastSteppingT = t;                   // stepper active -> remember for the gate
+
+    // Observer feedforward source (ff/both/gate): estimate W_hat from measured momentum + ground
+    // reaction every step, then hand it to the feedforward module. The ground reaction is read live,
+    // so single support during a step (swing foot ~ 0) is handled without special-casing.
     vector6_t wHat = vector6_t::Zero();
     if (ffModule) {
       adr::vector6_t hMeas;
@@ -250,14 +277,29 @@ int main(int argc, char** argv) {
       const double obsDt = std::clamp(rawDt, 1e-4, 4e-3);
       wHat = observer.update(hMeas, wKnown, obsDt);
       if (!wHat.allFinite()) wHat.setZero();  // safety net (should not trigger once dt is bounded)
-      vector_t wFF = wHat;  // fixed (6) -> dynamic vector_t for the feedforward buffer
+      // magff: at the first step trigger, latch whether this is a large push (observer ||W_hat|| >=
+      // magThresh). The observer thus gates its own feedforward.
+      if (ffMagGate && cs.stepCount > 0 && !magLatched) {
+        largePush = (wHat.head<3>().norm() >= magThresh);
+        magLatched = true;
+      }
+      // Remedy gates. Full gate ('gate'): FF off whenever the stepper is active + a settle window;
+      // removes the mid-band re-trigger but also kills the ceiling synergy (the bleed must act during
+      // the step). Hybrid ('hybrid'): FF on through the FIRST step's swing (t - firstStepT < swingDur),
+      // gated off afterward -- keeps the synergy while suppressing the spurious second step. magff:
+      // hybrid gating for a large push, full-gate gating for a small one (observer-decided).
+      bool gated = false;
+      if (ffGate) gated = (cs.fsmState != 0 || (t - lastSteppingT) < ffSettle);
+      if (ffHybrid) gated = (cs.stepCount >= 1 && firstStepT >= 0.0 && (t - firstStepT) >= swingDur);
+      if (ffMagGate) gated = largePush ? (cs.stepCount >= 1 && firstStepT >= 0.0 && (t - firstStepT) >= swingDur)
+                                       : (cs.fsmState != 0 || (t - lastSteppingT) < ffSettle);
+      vector_t wFF = vector_t::Zero(6);
+      if (!gated) {
+        wFF = wHat;  // fixed (6) -> dynamic vector_t for the feedforward buffer
+        whatPeak = std::max(whatPeak, wHat.head<3>().norm());
+      }
       ffModule->setWrench(wFF);
-      whatPeak = std::max(whatPeak, wHat.head<3>().norm());
     }
-
-    // Module capture state (from the MPC init state -- the trigger's quantity).
-    const ReactiveStepper::CaptureState cs = stepper->getCaptureState();
-    if (firstStepT < 0.0 && cs.stepCount > 0) firstStepT = t;  // first step onset (FF-delay diagnostic)
 
     const vector3_t base = st.getRootPositionInWorldFrame();
     last_z = base.z();
